@@ -1,5 +1,7 @@
 #version 300 es
 
+#extension GL_NV_shader_noperspective_interpolation : require
+
 #include "./includes/multi-draw.glsl";
 
 #define TEXTURE_ANIM_UNIT (1.0f / 128.0f)
@@ -33,6 +35,8 @@ uniform mediump isampler2DArray u_heightMap;
 layout(location = 0) in uvec3 a_vertex;
 
 out vec4 v_color;
+flat out int v_hsl;
+centroid out float v_lightness;
 out vec2 v_texCoord;
 flat out uint v_texId;
 flat out float v_alphaCutOff;
@@ -84,6 +88,8 @@ void main() {
     Vertex vertex = decodeVertex(a_vertex.x, a_vertex.y, a_vertex.z, u_brightness);
 
     v_color = vertex.color;
+    v_hsl = vertex.hsl & 0xff80;
+    v_lightness = float(vertex.hsl & 0x7F);
 
     Material material = getMaterial(vertex.textureId);
     vec2 textureAnimation = vec2(material.animU, material.animV);

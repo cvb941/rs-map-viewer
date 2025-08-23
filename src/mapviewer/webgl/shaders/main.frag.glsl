@@ -1,5 +1,7 @@
 #version 300 es
 
+#extension GL_NV_shader_noperspective_interpolation : require
+
 precision highp float;
 
 layout(std140, column_major) uniform;
@@ -9,6 +11,8 @@ layout(std140, column_major) uniform;
 uniform highp sampler2DArray u_textures;
 
 in vec4 v_color;
+flat in int v_hsl;
+centroid in float v_lightness;
 in vec2 v_texCoord;
 flat in uint v_texId;
 flat in float v_alphaCutOff;
@@ -18,10 +22,14 @@ flat in vec4 v_interactId;
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec4 interactId;
 
+#include "./includes/branchless-logic.glsl";
+#include "./includes/hsl-to-rgb.glsl";
+
 void main() {
     vec4 textureColor = texture(u_textures, vec3(v_texCoord, v_texId)).bgra;
-    fragColor = pow(textureColor, vec4(vec3(u_brightness), 1.0)) *
-        vec4(round(v_color.rgb * u_colorBanding) / u_colorBanding, v_color.a);
+    // fragColor = pow(textureColor, vec4(vec3(u_brightness), 1.0)) *
+    //     vec4(hslToRgb(v_hsl, 1.0), v_color.a);
+    fragColor = pow(textureColor, vec4(vec3(u_brightness), 1.0)) * vec4(hslToRgb(v_hsl | int(v_lightness), u_brightness), v_color.a);
 #ifdef DISCARD_ALPHA
     if ((v_texId == 0u && fragColor.a < 0.01) || (textureColor.a < v_alphaCutOff)) {
         discard;

@@ -200,6 +200,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const ext = this.gl.getExtension("WEBGL_multi_draw");
         PicoGL.WEBGL_INFO.MULTI_DRAW_INSTANCED = ext;
         state.extensions.multiDrawInstanced = ext;
+        const noperspectiveExt = this.gl.getExtension("NV_shader_noperspective_interpolation");
 
         this.hasMultiDraw = !!PicoGL.WEBGL_INFO.MULTI_DRAW_INSTANCED;
 

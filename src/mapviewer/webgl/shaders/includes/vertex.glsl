@@ -4,6 +4,7 @@ struct Vertex {
     vec2 texCoord;
     uint textureId;
     uint priority;
+    int hsl;
 };
 
 Vertex decodeVertex(uint v0, uint v1, uint v2, float brightness) {
@@ -23,5 +24,9 @@ Vertex decodeVertex(uint v0, uint v1, uint v2, float brightness) {
     vec4 color = when_eq(textureId, 0.0) * vec4(hslToRgb(hsl, brightness), alpha)
         + when_neq(textureId, 0.0) * vec4(vec3(float(hsl & 0x7F) / 127.0), alpha);
 
-    return Vertex(vec3(x, y, z), color, vec2(u, v), uint(textureId), priority);
+    if (textureId > 0.0) {
+        hsl = hsl & 0x7F;
+    }
+
+    return Vertex(vec3(x, y, z), color, vec2(u, v), uint(textureId), priority, hsl);
 }
