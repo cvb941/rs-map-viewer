@@ -345,6 +345,8 @@ export class NpcType extends Type {
             this.basTypeId = buffer.readUnsignedShort();
         } else if (opcode === 128) {
             buffer.readUnsignedByte();
+        } else if (opcode === 130) {
+            // readyanimduringanim = true;
         } else if (opcode === 134) {
             const idleSound = buffer.readUnsignedShort();
             const crawlSound = buffer.readUnsignedShort();
@@ -385,6 +387,8 @@ export class NpcType extends Type {
             // bool = true;
         } else if (opcode === 146) {
             buffer.readUnsignedShort();
+        } else if (opcode === 147) {
+            // unknown = false;
         } else if (opcode >= 150 && opcode < 155) {
             // member only options
             this.actions[opcode - 150] = this.readString(buffer);
