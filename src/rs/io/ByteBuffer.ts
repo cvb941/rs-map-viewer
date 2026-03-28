@@ -64,6 +64,12 @@ export class ByteBuffer {
         );
     }
 
+    readLong(): bigint {
+        const high = BigInt(this.readInt()) & 0xffffffffn;
+        const low = BigInt(this.readInt()) & 0xffffffffn;
+        return (high << 32n) | low;
+    }
+
     readFloat(): number {
         return FloatUtil.intBitsToFloat(this.readInt());
     }

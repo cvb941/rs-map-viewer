@@ -63,3 +63,25 @@ export class Dat2MapIndex implements MapFileIndex {
         return this.mapIndex.getArchiveId(`l${mapX}_${mapY}`);
     }
 }
+
+const WORLDAREA_GROUP_ID = (98 << 8) | 199;
+
+export class ModernMapFileIndex implements MapFileIndex {
+    constructor(readonly mapIndex: CacheIndex) {}
+
+    getTerrainArchiveId(mapX: number, mapY: number): number {
+        const archiveId = (mapX << 8) | mapY;
+        if (this.mapIndex.archiveExists(archiveId) && archiveId !== WORLDAREA_GROUP_ID) {
+            return archiveId;
+        }
+        return -1;
+    }
+
+    getLocArchiveId(mapX: number, mapY: number): number {
+        const archiveId = (mapX << 8) | mapY;
+        if (this.mapIndex.archiveExists(archiveId) && archiveId !== WORLDAREA_GROUP_ID) {
+            return archiveId;
+        }
+        return -1;
+    }
+}

@@ -88,3 +88,27 @@ export class LegacyMapFileLoader extends MapFileLoader {
         }
     }
 }
+
+const WORLDAREA_GROUP_ID = (98 << 8) | 199;
+
+export class ModernMapFileLoader extends MapFileLoader {
+    override getTerrainData(mapX: number, mapY: number): Int8Array | undefined {
+        const archiveId = (mapX << 8) | mapY;
+        if (!this.mapIndex.archiveExists(archiveId) || archiveId === WORLDAREA_GROUP_ID) {
+            return undefined;
+        }
+        return this.mapIndex.getFile(archiveId, 0)?.data;
+    }
+
+    override getLocData(mapX: number, mapY: number, xteasMap: XteaMap): Int8Array | undefined {
+        const archiveId = (mapX << 8) | mapY;
+        if (!this.mapIndex.archiveExists(archiveId) || archiveId === WORLDAREA_GROUP_ID) {
+            return undefined;
+        }
+        return this.mapIndex.getFile(archiveId, 1)?.data;
+    }
+
+    override getNpcSpawnData(mapX: number, mapY: number, xteasMap: XteaMap): Int8Array | undefined {
+        return undefined;
+    }
+}

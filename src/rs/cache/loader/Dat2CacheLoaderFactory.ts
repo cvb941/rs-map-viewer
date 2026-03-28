@@ -41,8 +41,8 @@ import {
     IndexVarBitTypeLoader,
     VarBitTypeLoader,
 } from "../../config/vartype/bit/VarBitTypeLoader";
-import { Dat2MapIndex, MapFileIndex } from "../../map/MapFileIndex";
-import { MapFileLoader } from "../../map/MapFileLoader";
+import { Dat2MapIndex, MapFileIndex, ModernMapFileIndex } from "../../map/MapFileIndex";
+import { MapFileLoader, ModernMapFileLoader } from "../../map/MapFileLoader";
 import { IndexModelLoader, ModelLoader } from "../../model/ModelLoader";
 import { IndexSeqBaseLoader, SeqBaseLoader } from "../../model/seq/SeqBaseLoader";
 import { Dat2SeqFrameLoader, SeqFrameLoader } from "../../model/seq/SeqFrameLoader";
@@ -220,6 +220,10 @@ export class Dat2CacheLoaderFactory implements CacheLoaderFactory {
 
     getMapFileLoader(): MapFileLoader {
         const mapIndex = this.cacheSystem.getIndex(IndexType.DAT2.maps);
+        if (this.cacheInfo.game === "oldschool" && this.cacheInfo.revision >= 237) {
+            const mapFileIndex = new ModernMapFileIndex(mapIndex);
+            return new ModernMapFileLoader(mapIndex, mapFileIndex);
+        }
         const mapFileIndex = new Dat2MapIndex(mapIndex);
         return new MapFileLoader(mapIndex, mapFileIndex);
     }

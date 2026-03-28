@@ -222,8 +222,38 @@ export class ObjType extends Type {
             }
         } else if (opcode === 42) {
             this.shiftClickIndex = buffer.readByte();
-        } else if (opcode === 44 || opcode === 45) {
-            buffer.readUnsignedShort();
+        } else if (opcode === 44) {
+            if (this.cacheInfo.game === "oldschool" && this.cacheInfo.revision >= 237) {
+                this.model = buffer.readInt();
+            } else {
+                buffer.readUnsignedShort();
+            }
+        } else if (opcode === 45) {
+            if (this.cacheInfo.game === "oldschool" && this.cacheInfo.revision >= 237) {
+                this.maleModel = buffer.readInt();
+                this.maleOffset = buffer.readUnsignedByte();
+            } else {
+                buffer.readUnsignedShort();
+            }
+        } else if (opcode === 46) {
+            this.maleModel1 = buffer.readInt();
+        } else if (opcode === 47) {
+            this.maleModel2 = buffer.readInt();
+        } else if (opcode === 48) {
+            this.femaleModel = buffer.readInt();
+            this.femaleOffset = buffer.readUnsignedByte();
+        } else if (opcode === 49) {
+            this.femaleModel1 = buffer.readInt();
+        } else if (opcode === 50) {
+            this.femaleModel2 = buffer.readInt();
+        } else if (opcode === 51) {
+            this.maleHeadModel = buffer.readInt();
+        } else if (opcode === 52) {
+            this.maleHeadModel2 = buffer.readInt();
+        } else if (opcode === 53) {
+            this.femaleHeadModel = buffer.readInt();
+        } else if (opcode === 54) {
+            this.femaleHeadModel2 = buffer.readInt();
         } else if (opcode === 65) {
             this.isTradable = true;
         } else if (opcode === 75) {
@@ -311,6 +341,28 @@ export class ObjType extends Type {
             this.placeholderTemplate = buffer.readUnsignedShort();
         } else if (opcode >= 150 && opcode < 155) {
             buffer.readUnsignedShort();
+        } else if (opcode === 200) {
+            // subop
+            buffer.readUnsignedByte();
+            buffer.readUnsignedByte();
+            buffer.readString();
+        } else if (opcode === 201) {
+            // multiop
+            buffer.readUnsignedByte();
+            buffer.readUnsignedShort();
+            buffer.readUnsignedShort();
+            buffer.readInt();
+            buffer.readInt();
+            buffer.readNullString();
+        } else if (opcode === 202) {
+            // multisubop
+            buffer.readUnsignedByte();
+            buffer.readUnsignedShort();
+            buffer.readUnsignedShort();
+            buffer.readUnsignedShort();
+            buffer.readInt();
+            buffer.readInt();
+            buffer.readNullString();
         } else if (opcode === 249) {
             this.params = Type.readParamsMap(buffer, this.params);
         } else {

@@ -2,7 +2,7 @@ import { CacheInfo } from "../cache/CacheInfo";
 import { CacheType, detectCacheType } from "../cache/CacheType";
 import { ByteBuffer } from "../io/ByteBuffer";
 
-export type ParamsMap = Map<number, number | string>;
+export type ParamsMap = Map<number, number | string | bigint>;
 
 export abstract class Type {
     readonly id: number;
@@ -14,16 +14,24 @@ export abstract class Type {
     static readParamsMap(buf: ByteBuffer, params?: ParamsMap): ParamsMap {
         const count = buf.readUnsignedByte();
         if (!params) {
-            params = new Map<number, number | string>();
+            params = new Map<number, number | string | bigint>();
         }
 
         for (let i = 0; i < count; i++) {
-            const isStringValue = buf.readUnsignedByte() === 1;
+            const typeId = buf.readUnsignedByte();
             const key = buf.readMedium();
-            if (isStringValue) {
-                params.set(key, buf.readString());
-            } else {
-                params.set(key, buf.readInt());
+            switch (typeId) {
+                case 0:
+                    params.set(key, buf.readInt());
+                    break;
+                case 1:
+                    params.set(key, buf.readString());
+                    break;
+                case 2:
+                    params.set(key, buf.readLong());
+                    break;
+                default:
+                    throw new Error(`Unknown param type ${typeId}`);
             }
         }
         return params;

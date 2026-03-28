@@ -197,6 +197,18 @@ export class NpcType extends Type {
                     this.chatheadModelIds[i] = buffer.readUnsignedShort();
                 }
             }
+        } else if (opcode === 61) {
+            const count = buffer.readUnsignedByte();
+            this.modelIds = new Array<number>(count);
+            for (let i = 0; i < count; i++) {
+                this.modelIds[i] = buffer.readInt();
+            }
+        } else if (opcode === 62) {
+            const count = buffer.readUnsignedByte();
+            this.chatheadModelIds = new Array<number>(count);
+            for (let i = 0; i < count; i++) {
+                this.chatheadModelIds[i] = buffer.readInt();
+            }
         } else if (opcode >= 74 && opcode <= 79) {
             // stats
             buffer.readUnsignedShort();
@@ -427,6 +439,28 @@ export class NpcType extends Type {
             buffer.readUnsignedShort();
         } else if (opcode === 249) {
             this.params = Type.readParamsMap(buffer, this.params);
+        } else if (opcode === 251) {
+            // subop
+            buffer.readUnsignedByte();
+            buffer.readUnsignedByte();
+            buffer.readString();
+        } else if (opcode === 252) {
+            // multiop
+            buffer.readUnsignedByte();
+            buffer.readUnsignedShort();
+            buffer.readUnsignedShort();
+            buffer.readInt();
+            buffer.readInt();
+            buffer.readNullString();
+        } else if (opcode === 253) {
+            // multisubop
+            buffer.readUnsignedByte();
+            buffer.readUnsignedShort();
+            buffer.readUnsignedShort();
+            buffer.readUnsignedShort();
+            buffer.readInt();
+            buffer.readInt();
+            buffer.readNullString();
         } else {
             throw new Error(
                 "NpcType: Opcode " +
