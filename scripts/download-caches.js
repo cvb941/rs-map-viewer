@@ -56,7 +56,7 @@ async function downloadCaches(count) {
                 cache.environment === "live" &&
                 cache.language === "en" &&
                 cache.builds.length > 0 &&
-                cache.builds[0].major >= 194 &&
+                cache.builds[0].major >= 186 &&
                 cache.builds[0].major <= 736 &&
                 cache.timestamp,
         ),
@@ -259,7 +259,7 @@ function createCacheList() {
         if (
             !isValid(cacheInfo) ||
             cacheInfo.language !== "en" ||
-            (cacheInfo.game === "runescape" && (revision < 194 || revision > 740)) ||
+            (cacheInfo.game === "runescape" && (revision < 186 || revision > 740)) ||
             revision === 311
         ) {
             continue;
