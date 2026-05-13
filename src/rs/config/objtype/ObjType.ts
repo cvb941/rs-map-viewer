@@ -73,7 +73,8 @@ export class ObjType extends Type {
 
     team: number;
 
-    isTradable: boolean;
+    tradeable: boolean;
+    stockmarket: boolean;
 
     op75: number;
 
@@ -123,7 +124,8 @@ export class ObjType extends Type {
         this.ambient = 0;
         this.contrast = 0;
         this.team = 0;
-        this.isTradable = false;
+        this.tradeable = true;
+        this.stockmarket = false;
         this.op75 = 0;
         this.unnotedId = -1;
         this.notedId = -1;
@@ -177,6 +179,8 @@ export class ObjType extends Type {
             this.op13 = buffer.readUnsignedByte();
         } else if (opcode === 14) {
             this.op14 = buffer.readUnsignedByte();
+        } else if (opcode === 15) {
+            this.tradeable = false;
         } else if (opcode === 16) {
             this.isMembers = true;
         } else if (opcode === 23) {
@@ -255,7 +259,7 @@ export class ObjType extends Type {
         } else if (opcode === 54) {
             this.femaleHeadModel2 = buffer.readInt();
         } else if (opcode === 65) {
-            this.isTradable = true;
+            this.stockmarket = true;
         } else if (opcode === 75) {
             this.op75 = buffer.readShort();
         } else if (opcode === 78) {
@@ -384,6 +388,7 @@ export class ObjType extends Type {
         this.retextureTo = template.retextureTo;
         this.name = original.name;
         this.isMembers = original.isMembers;
+        this.tradeable = original.tradeable;
         this.price = original.price;
         this.stackability = ObjStackability.ALWAYS;
     }
@@ -425,6 +430,7 @@ export class ObjType extends Type {
 
         this.inventoryActions[4] = "Discard";
         this.price = 0;
+        this.tradeable = false;
     }
 
     genPlaceholder(template: ObjType, original: ObjType): void {
@@ -443,7 +449,8 @@ export class ObjType extends Type {
         this.name = original.name;
         this.price = 0;
         this.isMembers = false;
-        this.isTradable = false;
+        this.tradeable = false;
+        this.stockmarket = false;
     }
 
     getCountObj(loader: ObjTypeLoader, count: number): ObjType {

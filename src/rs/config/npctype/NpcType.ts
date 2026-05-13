@@ -401,6 +401,35 @@ export class NpcType extends Type {
             buffer.readUnsignedShort();
         } else if (opcode === 147) {
             // unknown = false;
+        } else if (opcode === 148) {
+            // bgsound
+            buffer.readUnsignedShort();
+            buffer.readUnsignedByte();
+            buffer.readUnsignedByte();
+        } else if (opcode === 149) {
+            // bgsound drop off easing
+            buffer.readUnsignedByte();
+        } else if (opcode >= 150 && opcode <= 152 && this.cacheInfo.game === "oldschool") {
+            if (opcode === 150) {
+                // bgsoundfade
+                buffer.readUnsignedByte();
+                buffer.readUnsignedShort();
+                buffer.readUnsignedByte();
+                buffer.readUnsignedShort();
+            } else if (opcode === 151) {
+                // crossworldsound
+                buffer.readUnsignedByte();
+            } else if (opcode === 152) {
+                // randomsound
+                buffer.readUnsignedShort();
+                buffer.readUnsignedShort();
+                buffer.readUnsignedByte();
+                buffer.readUnsignedByte();
+                const count = buffer.readUnsignedByte();
+                for (let i = 0; i < count; i++) {
+                    buffer.readUnsignedShort();
+                }
+            }
         } else if (opcode >= 150 && opcode < 155) {
             // member only options
             this.actions[opcode - 150] = this.readString(buffer);
