@@ -194,7 +194,13 @@ async function toBufferParts(
     if (!response.body) {
         return [];
     }
-    const contentLength = offset + Number(response.headers.get("Content-Length") || 0);
+    const contentRangeTotal = response.headers.get("Content-Range")?.match(/\/(\d+)$/)?.[1];
+    let contentLength = contentRangeTotal
+        ? Number(contentRangeTotal)
+        : offset + Number(response.headers.get("Content-Length") || 0);
+    if (!Number.isFinite(contentLength)) {
+        contentLength = offset;
+    }
 
     const reader = response.body.getReader();
     const parts: Uint8Array[] = [];
@@ -213,7 +219,7 @@ async function toBufferParts(
         currentLength += res.value.byteLength;
         if (progressListener) {
             progressListener({
-                total: contentLength,
+                total: Math.max(contentLength, currentLength),
                 current: currentLength,
                 part: res.value,
             });
@@ -301,6 +307,11 @@ async function fetchCachedFile(
     });
     if (resp.status !== 200 && resp.status !== 206) {
         throw new Error("Failed downloading " + path + ", " + resp.status);
+    }
+    if (offset > 0 && resp.status === 200) {
+        parts.length = 0;
+        offset = 0;
+        partCount = 0;
     }
     const cacheUpdates: Promise<void>[] = [];
     let partCache: Uint8Array[] = [];

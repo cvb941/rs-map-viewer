@@ -121,8 +121,9 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
 
     let loadingBarOverlay: JSX.Element | undefined = undefined;
     if (downloadProgress) {
-        const formattedCacheSize = formatBytes(downloadProgress.total);
-        const progress = ((downloadProgress.current / downloadProgress.total) * 100) | 0;
+        const total = Math.max(downloadProgress.total, downloadProgress.current, 1);
+        const formattedCacheSize = formatBytes(total);
+        const progress = Math.min(100, ((downloadProgress.current / total) * 100) | 0);
         loadingBarOverlay = (
             <div className="overlay-container max-height">
                 <OsrsLoadingBar
