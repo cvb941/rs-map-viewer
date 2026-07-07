@@ -259,7 +259,23 @@ async function fetchCachedFile(
     progressListener?: ProgressListener,
 ): Promise<CachedFile> {
     const path = baseUrl + name;
-    const cachedResp = await cache.match(path);
+    let cachedResp = await cache.match(path);
+    if (cachedResp) {
+        if (incremental) {
+            try {
+                const cachedLength = Number(cachedResp.headers.get("Content-Length") || 0);
+                const headResp = await fetch(path, {
+                    method: "HEAD",
+                    signal,
+                });
+                const serverLength = Number(headResp.headers.get("Content-Length") || 0);
+                if (serverLength > 0 && cachedLength !== serverLength) {
+                    await cache.delete(path);
+                    cachedResp = undefined;
+                }
+            } catch (e) {}
+        }
+    }
     if (cachedResp) {
         const parts = await toBufferParts(cachedResp, 0, progressListener);
         return {
