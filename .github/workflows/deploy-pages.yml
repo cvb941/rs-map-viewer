@@ -30,6 +30,7 @@ jobs:
             - run: yarn install --frozen-lockfile
             - run: yarn build
               env:
+                  CI: false
                   PUBLIC_URL: /rs-map-viewer
 
             - uses: actions/upload-pages-artifact@v3
