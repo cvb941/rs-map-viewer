@@ -28,7 +28,7 @@ jobs:
 
             - run: npm install --global yarn@1.22.22
             - run: yarn install --frozen-lockfile
-            - run: printf '\n' | yarn download-caches
+            - run: yarn download-caches
             - run: yarn build
               env:
                   CI: false

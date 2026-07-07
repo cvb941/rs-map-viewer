@@ -105,8 +105,10 @@ async function downloadCaches(count) {
         }
     }
 
-    if (totalBytes > 0) {
+    if (totalBytes > 0 && process.env.GITHUB_ACTIONS !== "true") {
         await askQuestion("Downloading ~" + formatBytes(totalBytes) + ". Press enter to continue.");
+    } else if (totalBytes > 0) {
+        console.log("Downloading ~" + formatBytes(totalBytes) + ".");
     }
 
     for (const cache of cachesToDownload) {
