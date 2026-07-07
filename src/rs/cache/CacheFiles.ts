@@ -234,14 +234,17 @@ function partsToBuffer(parts: Uint8Array[], shared: boolean): ArrayBuffer {
         totalLength += part.byteLength;
     }
 
-    const sab = shared ? new SharedArrayBuffer(totalLength) : new ArrayBuffer(totalLength);
-    const u8 = new Uint8Array(sab);
+    const buffer =
+        shared && typeof SharedArrayBuffer !== "undefined"
+            ? new SharedArrayBuffer(totalLength)
+            : new ArrayBuffer(totalLength);
+    const u8 = new Uint8Array(buffer);
     let offset = 0;
     for (const buffer of parts) {
         u8.set(buffer, offset);
         offset += buffer.byteLength;
     }
-    return sab;
+    return buffer as ArrayBuffer;
 }
 
 type CachedFile = {
