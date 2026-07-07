@@ -1,5 +1,5 @@
 import Denque from "denque";
-import { vec2, vec4 } from "gl-matrix";
+import { mat4, vec2, vec4 } from "gl-matrix";
 import { folder } from "leva";
 import { Schema } from "leva/dist/declarations/src/types";
 import {
@@ -21,6 +21,7 @@ import { createTextureArray } from "../../picogl/PicoTexture";
 import { MenuTargetType } from "../../rs/MenuEntry";
 import { Scene } from "../../rs/scene/Scene";
 import { isTouchDevice, isWebGL2Supported, pixelRatio } from "../../util/DeviceUtil";
+import { getAxisDeadzone } from "../InputManager";
 import { MapViewer } from "../MapViewer";
 import { MapViewerRenderer } from "../MapViewerRenderer";
 import { MapViewerRendererType, WEBGL } from "../MapViewerRenderers";
@@ -48,6 +49,56 @@ interface ColorRgb {
     r: number;
     g: number;
     b: number;
+}
+
+interface XRSystemLike {
+    requestSession(
+        mode: "immersive-vr",
+        options?: { optionalFeatures?: string[] },
+    ): Promise<XRSessionLike>;
+}
+
+interface XRSessionLike extends EventTarget {
+    inputSources: Iterable<XRInputSourceLike>;
+    renderState: {
+        baseLayer?: XRWebGLLayerLike;
+    };
+    requestAnimationFrame(
+        callback: (time: DOMHighResTimeStamp, frame: XRFrameLike) => void,
+    ): number;
+    requestReferenceSpace(type: string): Promise<XRReferenceSpaceLike>;
+    updateRenderState(state: { baseLayer: XRWebGLLayerLike }): Promise<void> | void;
+    end(): Promise<void>;
+}
+
+interface XRFrameLike {
+    session: XRSessionLike;
+    getViewerPose(referenceSpace: XRReferenceSpaceLike): XRViewerPoseLike | null;
+}
+
+interface XRReferenceSpaceLike {}
+
+interface XRViewerPoseLike {
+    views: XRViewLike[];
+}
+
+interface XRViewLike {
+    projectionMatrix: Float32Array;
+    transform: {
+        inverse: {
+            matrix: Float32Array;
+        };
+    };
+}
+
+interface XRWebGLLayerLike {
+    framebuffer: WebGLFramebuffer | null;
+    getViewport(view: XRViewLike): { x: number; y: number; width: number; height: number };
+}
+
+interface XRInputSourceLike {
+    handedness?: string;
+    gamepad?: Gamepad;
 }
 
 enum TextureFilterMode {
@@ -172,6 +223,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     npcDataTextureBuffer: (Texture | undefined)[] = new Array(5);
 
+    xrSession?: XRSessionLike;
+    xrRefSpace?: XRReferenceSpaceLike;
+    xrViewMatrix: mat4 = mat4.create();
+    xrViewProjMatrix: mat4 = mat4.create();
+    resumeRenderLoopAfterXR: boolean = false;
+
     constructor(public mapViewer: MapViewer) {
         super(mapViewer);
         this.interactions = new Array(INTERACT_BUFFER_COUNT);
@@ -187,7 +244,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     async init(): Promise<void> {
         await super.init();
 
-        this.app = PicoGL.createApp(this.canvas);
+        this.app = PicoGL.createApp(this.canvas, { xrCompatible: true });
         this.gl = this.app.gl as WebGL2RenderingContext;
 
         // https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices#use_webgl_provoking_vertex_when_its_available
@@ -778,6 +835,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     override render(time: number, deltaTime: number, resized: boolean): void {
+        if (this.xrSession) {
+            return;
+        }
+
         const showDebugTimer = this.mapViewer.inputManager.isKeyDown("KeyY");
 
         if (showDebugTimer) {
@@ -844,19 +905,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.cameraPosUni[0] = camera.getPosX();
         this.cameraPosUni[1] = camera.getPosZ();
 
-        this.sceneUniformBuffer
-            .set(0, camera.viewProjMatrix as Float32Array)
-            .set(1, camera.viewMatrix as Float32Array)
-            .set(2, camera.projectionMatrix as Float32Array)
-            .set(3, this.skyColor as Float32Array)
-            .set(4, this.cameraPosUni as Float32Array)
-            .set(5, renderDistance as any)
-            .set(6, this.fogDepth as any)
-            .set(7, timeSec as any)
-            .set(8, this.brightness as any)
-            .set(9, this.colorBanding as any)
-            .set(10, this.mapViewer.isNewTextureAnim as any)
-            .update();
+        this.updateSceneUniforms(
+            camera.viewMatrix,
+            camera.projectionMatrix,
+            camera.viewProjMatrix,
+            timeSec,
+            renderDistance,
+        );
 
         const currInteractions = this.interactions[frameCount % this.interactions.length];
 
@@ -955,20 +1010,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.frameDrawCall.draw();
         }
 
-        // Load new map squares
-        const mapData = this.mapsToLoad.shift();
-        if (mapData && this.isValidMapData(mapData)) {
-            this.loadMap(
-                this.mainProgram,
-                this.mainAlphaProgram,
-                this.npcProgram,
-                this.textureArray,
-                this.textureMaterials,
-                this.sceneUniformBuffer,
-                mapData,
-                timeSec,
-            );
-        }
+        this.loadPendingMap(timeSec);
 
         if (showDebugTimer) {
             this.timer.end();
@@ -1002,6 +1044,304 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.mapViewer.debugText = `Frame Time GL: ${this.timer.gpuTime.toFixed(
                 2,
             )}ms\n JS: ${this.timer.cpuTime.toFixed(2)}ms`;
+        }
+    }
+
+    async enterVR(): Promise<void> {
+        if (this.xrSession) {
+            return;
+        }
+
+        const xr = (navigator as Navigator & { xr?: XRSystemLike }).xr;
+        const XRWebGLLayer = (
+            window as Window & {
+                XRWebGLLayer?: new (
+                    session: XRSessionLike,
+                    gl: WebGL2RenderingContext,
+                ) => XRWebGLLayerLike;
+            }
+        ).XRWebGLLayer;
+
+        if (!xr || !XRWebGLLayer) {
+            alert(
+                "WebXR VR is not available. On Quest, open this over HTTPS in Meta Quest Browser.",
+            );
+            return;
+        }
+
+        let session: XRSessionLike | undefined;
+        try {
+            session = await xr.requestSession("immersive-vr", {
+                optionalFeatures: ["local-floor"],
+            });
+
+            this.resumeRenderLoopAfterXR = this.running;
+            this.running = false;
+            if (this.animationId !== undefined) {
+                cancelAnimationFrame(this.animationId);
+                this.animationId = undefined;
+            }
+
+            const xrGl = this.gl as WebGL2RenderingContext & {
+                makeXRCompatible?: () => Promise<void>;
+            };
+            await xrGl.makeXRCompatible?.();
+
+            const glLayer = new XRWebGLLayer(session, this.gl);
+            await session.updateRenderState({ baseLayer: glLayer });
+
+            this.xrSession = session;
+            this.xrRefSpace = await this.requestXRReferenceSpace(session);
+            session.addEventListener("end", this.onXRSessionEnd);
+            session.requestAnimationFrame(this.onXRFrame);
+        } catch (e) {
+            session?.removeEventListener("end", this.onXRSessionEnd);
+            session?.end().catch(() => {});
+            this.xrSession = undefined;
+            this.xrRefSpace = undefined;
+            this.resumeDesktopRenderLoop();
+            alert(`Failed to enter VR: ${e instanceof Error ? e.message : String(e)}`);
+        }
+    }
+
+    async exitVR(): Promise<void> {
+        await this.xrSession?.end();
+    }
+
+    private async requestXRReferenceSpace(session: XRSessionLike): Promise<XRReferenceSpaceLike> {
+        try {
+            return await session.requestReferenceSpace("local");
+        } catch {
+            try {
+                return await session.requestReferenceSpace("local-floor");
+            } catch {
+                return session.requestReferenceSpace("viewer");
+            }
+        }
+    }
+
+    private onXRSessionEnd = () => {
+        this.xrSession?.removeEventListener("end", this.onXRSessionEnd);
+        this.xrSession = undefined;
+        this.xrRefSpace = undefined;
+        this.resetPicoGLFramebufferState();
+        this.resumeDesktopRenderLoop();
+    };
+
+    private resumeDesktopRenderLoop(): void {
+        if (this.resumeRenderLoopAfterXR) {
+            this.running = true;
+            this.animationId = requestAnimationFrame(this.frameCallback);
+        }
+        this.resumeRenderLoopAfterXR = false;
+    }
+
+    private onXRFrame = (time: DOMHighResTimeStamp, frame: XRFrameLike) => {
+        const session = frame.session;
+        if (session !== this.xrSession || !this.xrRefSpace) {
+            return;
+        }
+
+        try {
+            const deltaTime = this.stats.getDeltaTime(time);
+            this.stats.update(time);
+            this.renderXRFrame(time, deltaTime, frame);
+            this.onFrameEnd();
+        } finally {
+            if (this.xrSession === session) {
+                session.requestAnimationFrame(this.onXRFrame);
+            }
+        }
+    };
+
+    private renderXRFrame(
+        time: DOMHighResTimeStamp,
+        deltaTime: DOMHighResTimeStamp,
+        frame: XRFrameLike,
+    ): void {
+        const pose = frame.getViewerPose(this.xrRefSpace!);
+        const glLayer = frame.session.renderState.baseLayer;
+        if (!pose || !glLayer) {
+            return;
+        }
+
+        if (
+            !this.mainProgram ||
+            !this.mainAlphaProgram ||
+            !this.npcProgram ||
+            !this.sceneUniformBuffer ||
+            !this.textureArray ||
+            !this.textureMaterials
+        ) {
+            return;
+        }
+
+        const timeSec = time / 1000;
+        const frameCount = this.stats.frameCount;
+        const tick = Math.floor(timeSec / 0.6);
+        const ticksElapsed = Math.min(tick - this.lastTick, 1);
+        if (ticksElapsed > 0) {
+            this.lastTick = tick;
+        }
+
+        const clientTick = Math.floor(timeSec / 0.02);
+        const clientTicksElapsed = Math.min(clientTick - this.lastClientTick, 50);
+        if (clientTicksElapsed > 0) {
+            this.lastClientTick = clientTick;
+        }
+
+        const camera = this.mapViewer.camera;
+        this.handleKeyInput(deltaTime);
+        this.handleJoystickInput(deltaTime);
+        this.handleXRControllerInput(deltaTime, frame.session);
+        camera.update(this.app.width, this.app.height);
+
+        const renderDistance = this.mapViewer.renderDistance;
+        this.mapManager.update(
+            camera,
+            frameCount,
+            renderDistance,
+            this.mapViewer.unloadDistance,
+            false,
+        );
+
+        this.cameraPosUni[0] = camera.getPosX();
+        this.cameraPosUni[1] = camera.getPosZ();
+
+        this.tickPass(timeSec, ticksElapsed, clientTicksElapsed);
+        const npcDataTextureIndex = this.updateNpcDataTexture();
+        const npcDataTexture = this.npcDataTextureBuffer[npcDataTextureIndex];
+
+        if (this.cullBackFace) {
+            this.app.enable(PicoGL.CULL_FACE);
+        } else {
+            this.app.disable(PicoGL.CULL_FACE);
+        }
+
+        this.app.enable(PicoGL.DEPTH_TEST);
+        this.app.depthMask(true);
+        this.bindXRFramebuffer(glLayer.framebuffer);
+
+        for (const view of pose.views) {
+            const viewport = glLayer.getViewport(view);
+            this.gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+            this.gl.enable(PicoGL.SCISSOR_TEST);
+            this.gl.scissor(viewport.x, viewport.y, viewport.width, viewport.height);
+            this.gl.clearBufferfv(PicoGL.COLOR, 0, this.skyColor);
+            this.gl.clear(PicoGL.DEPTH_BUFFER_BIT);
+            this.gl.disable(PicoGL.SCISSOR_TEST);
+
+            mat4.multiply(this.xrViewMatrix, view.transform.inverse.matrix, camera.viewMatrix);
+            mat4.multiply(this.xrViewProjMatrix, view.projectionMatrix, this.xrViewMatrix);
+            this.updateSceneUniforms(
+                this.xrViewMatrix,
+                view.projectionMatrix,
+                this.xrViewProjMatrix,
+                timeSec,
+                renderDistance,
+            );
+            this.drawScenePasses(npcDataTextureIndex, npcDataTexture);
+        }
+
+        this.loadPendingMap(timeSec);
+    }
+
+    private handleXRControllerInput(deltaTime: number, session: XRSessionLike): void {
+        const deltaTimeSec = deltaTime / 1000;
+        const moveSpeed = 16 * this.mapViewer.cameraSpeed * deltaTimeSec;
+        const turnSpeed = 64 * 5 * deltaTimeSec;
+
+        for (const inputSource of session.inputSources) {
+            const axes = inputSource.gamepad?.axes;
+            if (!axes || axes.length < 2) {
+                continue;
+            }
+
+            const axisOffset = axes.length >= 4 ? 2 : 0;
+            const x = getAxisDeadzone(axes[axisOffset], 0.15);
+            const y = getAxisDeadzone(axes[axisOffset + 1], 0.15);
+            if (x === 0 && y === 0) {
+                continue;
+            }
+
+            if (inputSource.handedness === "right") {
+                this.mapViewer.camera.updateYaw(this.mapViewer.camera.yaw, x * turnSpeed);
+                this.mapViewer.camera.move(0, y * moveSpeed, 0);
+            } else {
+                this.mapViewer.camera.move(x * -moveSpeed, 0, y * moveSpeed, false);
+            }
+        }
+    }
+
+    private bindXRFramebuffer(framebuffer: WebGLFramebuffer | null): void {
+        this.gl.bindFramebuffer(PicoGL.FRAMEBUFFER, framebuffer);
+        this.gl.drawBuffers([PicoGL.COLOR_ATTACHMENT0]);
+        this.resetPicoGLFramebufferState();
+    }
+
+    private resetPicoGLFramebufferState(): void {
+        const state = this.app.state as any;
+        state.framebuffers[state.drawFramebufferBinding] = undefined;
+        state.framebuffers[state.readFramebufferBinding] = undefined;
+    }
+
+    private updateSceneUniforms(
+        viewMatrix: mat4,
+        projectionMatrix: mat4,
+        viewProjMatrix: mat4,
+        timeSec: number,
+        renderDistance: number,
+    ): void {
+        this.sceneUniformBuffer
+            ?.set(0, viewProjMatrix as Float32Array)
+            .set(1, viewMatrix as Float32Array)
+            .set(2, projectionMatrix as Float32Array)
+            .set(3, this.skyColor as Float32Array)
+            .set(4, this.cameraPosUni as Float32Array)
+            .set(5, renderDistance as any)
+            .set(6, this.fogDepth as any)
+            .set(7, timeSec as any)
+            .set(8, this.brightness as any)
+            .set(9, this.colorBanding as any)
+            .set(10, this.mapViewer.isNewTextureAnim as any)
+            .update();
+    }
+
+    private drawScenePasses(
+        npcDataTextureIndex: number,
+        npcDataTexture: Texture | undefined,
+    ): void {
+        this.app.disable(PicoGL.BLEND);
+        this.renderOpaquePass();
+        this.renderOpaqueNpcPass(npcDataTextureIndex, npcDataTexture);
+
+        this.app.enable(PicoGL.BLEND);
+        this.renderTransparentPass();
+        this.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
+    }
+
+    private loadPendingMap(timeSec: number): void {
+        const mapData = this.mapsToLoad.shift();
+        if (
+            mapData &&
+            this.isValidMapData(mapData) &&
+            this.mainProgram &&
+            this.mainAlphaProgram &&
+            this.npcProgram &&
+            this.textureArray &&
+            this.textureMaterials &&
+            this.sceneUniformBuffer
+        ) {
+            this.loadMap(
+                this.mainProgram,
+                this.mainAlphaProgram,
+                this.npcProgram,
+                this.textureArray,
+                this.textureMaterials,
+                this.sceneUniformBuffer,
+                mapData,
+                timeSec,
+            );
         }
     }
 
@@ -1456,6 +1796,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     override async cleanUp(): Promise<void> {
+        const xrSession = this.xrSession;
+        this.xrSession = undefined;
+        this.xrRefSpace = undefined;
+        this.resumeRenderLoopAfterXR = false;
+        xrSession?.removeEventListener("end", this.onXRSessionEnd);
+        xrSession?.end().catch(() => {});
+
         super.cleanUp();
         this.mapViewer.workerPool.resetLoader(this.dataLoader);
 

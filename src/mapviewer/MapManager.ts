@@ -149,6 +149,7 @@ export class MapManager<T extends MapSquare> {
         frameCount: number,
         renderDistance: number,
         unloadDistance: number,
+        useFrustum: boolean = true,
     ): void {
         const cameraX = camera.getPosX();
         const cameraZ = camera.getPosZ();
@@ -215,7 +216,7 @@ export class MapManager<T extends MapSquare> {
             const mapId = this.renderDistMapIds[i];
             const mapX = mapId >> 8;
             const mapY = mapId & 0xff;
-            if (!this.isMapVisible(camera, mapX, mapY)) {
+            if (useFrustum && !this.isMapVisible(camera, mapX, mapY)) {
                 continue;
             }
             const mapSquare = this.mapSquares.get(mapId);

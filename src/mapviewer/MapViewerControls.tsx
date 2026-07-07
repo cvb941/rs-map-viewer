@@ -18,6 +18,7 @@ import {
     getRendererName,
 } from "./MapViewerRenderers";
 import { fetchNpcSpawns, getNpcSpawnsUrl } from "./data/npc/NpcSpawn";
+import { WebGLMapViewerRenderer } from "./webgl/WebGLMapViewerRenderer";
 
 interface MapViewerControlsProps {
     renderer: MapViewerRenderer;
@@ -223,6 +224,20 @@ export const MapViewerControls = memo(
             recordSchema[buttonName].order = -1;
         }
 
+        const isWebGLRenderer = renderer instanceof WebGLMapViewerRenderer;
+        const hasWebXR =
+            typeof navigator !== "undefined" &&
+            !!(navigator as Navigator & { xr?: unknown }).xr &&
+            !!(window as Window & { XRWebGLLayer?: unknown }).XRWebGLLayer;
+        const canEnterVR = isWebGLRenderer && window.isSecureContext && hasWebXR;
+        const vrStatusText = !isWebGLRenderer
+            ? "Use WebGL renderer"
+            : !window.isSecureContext
+            ? "Requires HTTPS"
+            : hasWebXR
+            ? "Ready"
+            : "Not available";
+
         useControls(
             {
                 Links: folder(
@@ -339,6 +354,23 @@ export const MapViewerControls = memo(
                             },
                         },
                         ...renderer.getControls(),
+                    },
+                    { collapsed: true },
+                ),
+                VR: folder(
+                    {
+                        Status: {
+                            value: vrStatusText,
+                            editable: false,
+                        },
+                        "Enter VR": button(
+                            () => {
+                                if (renderer instanceof WebGLMapViewerRenderer) {
+                                    renderer.enterVR();
+                                }
+                            },
+                            { disabled: !canEnterVR },
+                        ),
                     },
                     { collapsed: true },
                 ),
