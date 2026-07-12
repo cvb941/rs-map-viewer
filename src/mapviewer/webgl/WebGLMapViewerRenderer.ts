@@ -52,6 +52,8 @@ const MAX_HAND_JOINTS_PER_HAND = 25;
 const XR_METERS_PER_SCENE_UNIT = 1.1; // A typical humanoid NPC is about 1.75 m tall.
 const XR_MIN_WORLD_SCALE = 0.1;
 const XR_MAX_WORLD_SCALE = 10;
+const XR_FRAMEBUFFER_SCALE = 0.8;
+const XR_FIXED_FOVEATION = 2 / 3;
 
 interface ColorRgb {
     r: number;
@@ -119,6 +121,7 @@ interface XRViewLike {
 
 interface XRWebGLLayerLike {
     framebuffer: WebGLFramebuffer | null;
+    fixedFoveation?: number | null;
     getViewport(view: XRViewLike): { x: number; y: number; width: number; height: number };
 }
 
@@ -216,7 +219,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     interactColorTarget?: Texture;
     interactFramebuffer?: Framebuffer;
 
-    xrColorTarget?: Renderbuffer;
+    xrColorTarget?: Texture;
     xrDepthTarget?: Renderbuffer;
     xrFramebuffer?: Framebuffer;
 
@@ -275,6 +278,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     xrWorldViewMatrix: mat4 = mat4.create();
     xrViewMatrix: mat4 = mat4.create();
     xrViewProjMatrix: mat4 = mat4.create();
+    xrResolutionUni: vec2 = vec2.create();
     resumeRenderLoopAfterXR: boolean = false;
     xrFrameValidated: boolean = false;
     xrHandsValidated: boolean = false;
@@ -1138,7 +1142,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 XRWebGLLayer?: new (
                     session: XRSessionLike,
                     gl: WebGL2RenderingContext,
-                    options?: { alpha?: boolean; antialias?: boolean; depth?: boolean },
+                    options?: {
+                        alpha?: boolean;
+                        antialias?: boolean;
+                        depth?: boolean;
+                        framebufferScaleFactor?: number;
+                    },
                 ) => XRWebGLLayerLike;
             }
         ).XRWebGLLayer;
@@ -1172,7 +1181,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 alpha: true,
                 antialias: false,
                 depth: false,
+                framebufferScaleFactor: XR_FRAMEBUFFER_SCALE,
             });
+            if (glLayer.fixedFoveation !== undefined && glLayer.fixedFoveation !== null) {
+                glLayer.fixedFoveation = XR_FIXED_FOVEATION;
+            }
             await session.updateRenderState({
                 baseLayer: glLayer,
                 depthNear: 0.1,
@@ -1302,6 +1315,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             !this.mainProgram ||
             !this.mainAlphaProgram ||
             !this.npcProgram ||
+            !this.frameFxaaDrawCall ||
             !this.sceneUniformBuffer ||
             !this.textureArray ||
             !this.textureMaterials
@@ -1354,13 +1368,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         mat4.multiply(this.xrWorldViewMatrix, this.xrViewProjMatrix, this.xrWorldViewMatrix);
 
         const renderDistance = this.mapViewer.renderDistance;
-        this.mapManager.update(
-            camera,
-            frameCount,
-            renderDistance,
-            this.mapViewer.unloadDistance,
-            false,
-        );
+        const cullView = views[0].view;
+        mat4.multiply(this.xrViewMatrix, cullView.transform.inverse.matrix, this.xrWorldViewMatrix);
+        mat4.multiply(this.xrViewProjMatrix, cullView.projectionMatrix, this.xrViewMatrix);
+        camera.frustum.setPlanes(this.xrViewProjMatrix);
+        this.mapManager.update(camera, frameCount, renderDistance, this.mapViewer.unloadDistance);
 
         this.cameraPosUni[0] = camera.getPosX();
         this.cameraPosUni[1] = camera.getPosZ();
@@ -1381,6 +1393,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const handJointCount = this.updateXRHandJoints(frame);
 
         for (const { view, viewport } of views) {
+            this.app.enable(PicoGL.DEPTH_TEST);
+            this.app.depthMask(true);
             this.app.drawFramebuffer(this.xrFramebuffer!);
             this.app.viewport(0, 0, viewport.width, viewport.height);
             this.gl.disable(PicoGL.SCISSOR_TEST);
@@ -1398,23 +1412,20 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.drawScenePasses(npcDataTextureIndex, npcDataTexture);
             this.drawXRHandJoints(view, handJointCount);
 
-            this.app.readFramebuffer(this.xrFramebuffer!);
-            this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT0);
+            this.app.disable(PicoGL.DEPTH_TEST);
+            this.app.depthMask(false);
+            this.app.disable(PicoGL.BLEND);
             this.gl.bindFramebuffer(PicoGL.DRAW_FRAMEBUFFER, glLayer.framebuffer);
-            this.gl.blitFramebuffer(
-                0,
-                0,
-                viewport.width,
-                viewport.height,
-                viewport.x,
-                viewport.y,
-                viewport.x + viewport.width,
-                viewport.y + viewport.height,
-                PicoGL.COLOR_BUFFER_BIT,
-                PicoGL.NEAREST,
-            );
             this.resetPicoGLFramebufferState();
+            this.app.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+            this.xrResolutionUni[0] = viewport.width;
+            this.xrResolutionUni[1] = viewport.height;
+            this.frameFxaaDrawCall
+                .uniform("u_resolution", this.xrResolutionUni)
+                .texture("u_frame", this.xrColorTarget!)
+                .draw();
         }
+        this.app.depthMask(true);
 
         this.loadPendingMap(timeSec);
     }
@@ -1605,7 +1616,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     private ensureXRFramebuffer(width: number, height: number): void {
         if (!this.xrFramebuffer) {
-            this.xrColorTarget = this.app.createRenderbuffer(width, height, PicoGL.RGBA8);
+            this.xrColorTarget = this.app.createTexture2D(width, height, {
+                internalFormat: PicoGL.RGBA8,
+                minFilter: PicoGL.LINEAR,
+                magFilter: PicoGL.LINEAR,
+            });
             this.xrDepthTarget = this.app.createRenderbuffer(
                 width,
                 height,

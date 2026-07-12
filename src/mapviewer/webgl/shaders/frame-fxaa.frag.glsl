@@ -16,5 +16,5 @@ out vec4 fragColor;
 #include "./includes/fxaa/fxaa.glsl";
 
 void main() {
-    fragColor = fxaa(u_frame, gl_FragCoord.xy, u_resolution, v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
+    fragColor = fxaa(u_frame, v_rgbM * u_resolution, u_resolution, v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
 }
