@@ -212,6 +212,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     interactColorTarget?: Texture;
     interactFramebuffer?: Framebuffer;
 
+    xrColorTarget?: Renderbuffer;
+    xrDepthTarget?: Renderbuffer;
+    xrFramebuffer?: Framebuffer;
+
     // Textures
     textureFilterMode: TextureFilterMode = TextureFilterMode.ANISOTROPIC_16X;
 
@@ -1155,9 +1159,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             await xrGl.makeXRCompatible?.();
 
             const glLayer = new XRWebGLLayer(session, this.gl, {
-                alpha: false,
-                antialias: true,
-                depth: true,
+                alpha: true,
+                antialias: false,
+                depth: false,
             });
             await session.updateRenderState({
                 baseLayer: glLayer,
@@ -1215,8 +1219,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.xrFrameError = undefined;
         this.xrHandPinches.clear();
         this.xrHandPositions.clear();
+        this.deleteXRFramebuffer();
         this.resetPicoGLFramebufferState();
-        this.gl.viewport(0, 0, this.app.width, this.app.height);
+        this.app.viewport(0, 0, this.app.width, this.app.height);
         this.resumeDesktopRenderLoop();
         if (frameError) {
             setTimeout(() => alert(`VR rendering failed: ${frameError}`));
@@ -1284,6 +1289,15 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             return;
         }
 
+        const views = pose.views.map((view) => ({ view, viewport: glLayer.getViewport(view) }));
+        if (views.length === 0) {
+            return;
+        }
+        this.ensureXRFramebuffer(
+            Math.max(...views.map(({ viewport }) => viewport.width)),
+            Math.max(...views.map(({ viewport }) => viewport.height)),
+        );
+
         const timeSec = time / 1000;
         const frameCount = this.stats.frameCount;
         const tick = Math.floor(timeSec / 0.6);
@@ -1330,16 +1344,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.app.enable(PicoGL.DEPTH_TEST);
         this.app.depthMask(true);
         this.app.clearColor(this.skyColor[0], this.skyColor[1], this.skyColor[2], 1);
-        this.bindXRFramebuffer(glLayer.framebuffer);
         const handJointCount = this.updateXRHandJoints(frame);
 
-        for (const view of pose.views) {
-            const viewport = glLayer.getViewport(view);
-            this.gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-            this.gl.enable(PicoGL.SCISSOR_TEST);
-            this.gl.scissor(viewport.x, viewport.y, viewport.width, viewport.height);
-            this.gl.clear(PicoGL.COLOR_BUFFER_BIT | PicoGL.DEPTH_BUFFER_BIT);
+        for (const { view, viewport } of views) {
+            this.app.drawFramebuffer(this.xrFramebuffer!);
+            this.app.viewport(0, 0, viewport.width, viewport.height);
             this.gl.disable(PicoGL.SCISSOR_TEST);
+            this.gl.clear(PicoGL.COLOR_BUFFER_BIT | PicoGL.DEPTH_BUFFER_BIT);
 
             mat4.multiply(this.xrViewMatrix, view.transform.inverse.matrix, camera.viewMatrix);
             mat4.multiply(this.xrViewProjMatrix, view.projectionMatrix, this.xrViewMatrix);
@@ -1352,6 +1363,23 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             );
             this.drawScenePasses(npcDataTextureIndex, npcDataTexture);
             this.drawXRHandJoints(view, handJointCount);
+
+            this.app.readFramebuffer(this.xrFramebuffer!);
+            this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT0);
+            this.gl.bindFramebuffer(PicoGL.DRAW_FRAMEBUFFER, glLayer.framebuffer);
+            this.gl.blitFramebuffer(
+                0,
+                0,
+                viewport.width,
+                viewport.height,
+                viewport.x,
+                viewport.y,
+                viewport.x + viewport.width,
+                viewport.y + viewport.height,
+                PicoGL.COLOR_BUFFER_BIT,
+                PicoGL.NEAREST,
+            );
+            this.resetPicoGLFramebufferState();
         }
 
         this.loadPendingMap(timeSec);
@@ -1493,10 +1521,37 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
     }
 
-    private bindXRFramebuffer(framebuffer: WebGLFramebuffer | null): void {
-        this.gl.bindFramebuffer(PicoGL.DRAW_FRAMEBUFFER, framebuffer);
-        const state = this.app.state as any;
-        state.framebuffers[state.drawFramebufferBinding] = undefined;
+    private ensureXRFramebuffer(width: number, height: number): void {
+        if (!this.xrFramebuffer) {
+            this.xrColorTarget = this.app.createRenderbuffer(width, height, PicoGL.RGBA8);
+            this.xrDepthTarget = this.app.createRenderbuffer(
+                width,
+                height,
+                PicoGL.DEPTH_COMPONENT24,
+            );
+            this.xrFramebuffer = this.app
+                .createFramebuffer()
+                .colorTarget(0, this.xrColorTarget)
+                .depthTarget(this.xrDepthTarget);
+        } else if (this.xrFramebuffer.width !== width || this.xrFramebuffer.height !== height) {
+            this.xrFramebuffer.resize(width, height);
+        } else {
+            return;
+        }
+
+        const status = this.xrFramebuffer.getStatus();
+        if (status !== PicoGL.FRAMEBUFFER_COMPLETE) {
+            throw new Error(`WebXR framebuffer is incomplete: 0x${status.toString(16)}`);
+        }
+    }
+
+    private deleteXRFramebuffer(): void {
+        this.xrFramebuffer?.delete();
+        this.xrFramebuffer = undefined;
+        this.xrColorTarget?.delete();
+        this.xrColorTarget = undefined;
+        this.xrDepthTarget?.delete();
+        this.xrDepthTarget = undefined;
     }
 
     private resetPicoGLFramebufferState(): void {
@@ -2026,6 +2081,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         xrSession?.end().catch(() => {});
         this.xrHandPinches.clear();
         this.xrHandPositions.clear();
+        this.deleteXRFramebuffer();
 
         super.cleanUp();
         this.mapViewer.workerPool.resetLoader(this.dataLoader);
