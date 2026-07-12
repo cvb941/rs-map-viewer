@@ -294,7 +294,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     async init(): Promise<void> {
         await super.init();
 
-        this.app = PicoGL.createApp(this.canvas, { xrCompatible: true });
+        this.app = PicoGL.createApp(this.canvas, { xrCompatible: true, antialias: false });
         this.gl = this.app.gl as WebGL2RenderingContext;
 
         // https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices#use_webgl_provoking_vertex_when_its_available
