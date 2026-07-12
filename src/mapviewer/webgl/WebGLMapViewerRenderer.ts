@@ -67,7 +67,11 @@ interface XRSessionLike extends EventTarget {
         callback: (time: DOMHighResTimeStamp, frame: XRFrameLike) => void,
     ): number;
     requestReferenceSpace(type: string): Promise<XRReferenceSpaceLike>;
-    updateRenderState(state: { baseLayer: XRWebGLLayerLike }): Promise<void> | void;
+    updateRenderState(state: {
+        baseLayer?: XRWebGLLayerLike;
+        depthNear?: number;
+        depthFar?: number;
+    }): Promise<void> | void;
     end(): Promise<void>;
 }
 
@@ -228,6 +232,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     xrViewMatrix: mat4 = mat4.create();
     xrViewProjMatrix: mat4 = mat4.create();
     resumeRenderLoopAfterXR: boolean = false;
+    xrFrameValidated: boolean = false;
+    xrFrameError?: string;
 
     constructor(public mapViewer: MapViewer) {
         super(mapViewer);
@@ -1058,6 +1064,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 XRWebGLLayer?: new (
                     session: XRSessionLike,
                     gl: WebGL2RenderingContext,
+                    options?: { alpha?: boolean; antialias?: boolean; depth?: boolean },
                 ) => XRWebGLLayerLike;
             }
         ).XRWebGLLayer;
@@ -1087,11 +1094,24 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             };
             await xrGl.makeXRCompatible?.();
 
-            const glLayer = new XRWebGLLayer(session, this.gl);
-            await session.updateRenderState({ baseLayer: glLayer });
+            const glLayer = new XRWebGLLayer(session, this.gl, {
+                alpha: false,
+                antialias: true,
+                depth: true,
+            });
+            await session.updateRenderState({
+                baseLayer: glLayer,
+                depthNear: 0.1,
+                depthFar: 4096,
+            });
 
             this.xrSession = session;
             this.xrRefSpace = await this.requestXRReferenceSpace(session);
+            this.xrFrameValidated = false;
+            this.xrFrameError = undefined;
+            while (this.gl.getError() !== PicoGL.NO_ERROR) {
+                // Ignore errors left by the last desktop frame.
+            }
             session.addEventListener("end", this.onXRSessionEnd);
             session.requestAnimationFrame(this.onXRFrame);
         } catch (e) {
@@ -1110,10 +1130,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     private async requestXRReferenceSpace(session: XRSessionLike): Promise<XRReferenceSpaceLike> {
         try {
-            return await session.requestReferenceSpace("local");
+            return await session.requestReferenceSpace("local-floor");
         } catch {
             try {
-                return await session.requestReferenceSpace("local-floor");
+                return await session.requestReferenceSpace("local");
             } catch {
                 return session.requestReferenceSpace("viewer");
             }
@@ -1121,11 +1141,17 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     private onXRSessionEnd = () => {
+        const frameError = this.xrFrameError;
         this.xrSession?.removeEventListener("end", this.onXRSessionEnd);
         this.xrSession = undefined;
         this.xrRefSpace = undefined;
+        this.xrFrameError = undefined;
         this.resetPicoGLFramebufferState();
+        this.gl.viewport(0, 0, this.app.width, this.app.height);
         this.resumeDesktopRenderLoop();
+        if (frameError) {
+            setTimeout(() => alert(`VR rendering failed: ${frameError}`));
+        }
     };
 
     private resumeDesktopRenderLoop(): void {
@@ -1142,13 +1168,26 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             return;
         }
 
+        let failed = false;
         try {
             const deltaTime = this.stats.getDeltaTime(time);
             this.stats.update(time);
             this.renderXRFrame(time, deltaTime, frame);
+            if (!this.xrFrameValidated) {
+                const glError = this.gl.getError();
+                if (glError !== PicoGL.NO_ERROR) {
+                    throw new Error(`WebGL error 0x${glError.toString(16)}`);
+                }
+                this.xrFrameValidated = true;
+            }
             this.onFrameEnd();
+        } catch (e) {
+            failed = true;
+            console.error("WebXR frame failed", e);
+            this.xrFrameError = e instanceof Error ? e.message : String(e);
+            session.end().catch(() => {});
         } finally {
-            if (this.xrSession === session) {
+            if (!failed && this.xrSession === session) {
                 session.requestAnimationFrame(this.onXRFrame);
             }
         }
@@ -1220,6 +1259,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         this.app.enable(PicoGL.DEPTH_TEST);
         this.app.depthMask(true);
+        this.app.clearColor(this.skyColor[0], this.skyColor[1], this.skyColor[2], 1);
         this.bindXRFramebuffer(glLayer.framebuffer);
 
         for (const view of pose.views) {
@@ -1227,8 +1267,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
             this.gl.enable(PicoGL.SCISSOR_TEST);
             this.gl.scissor(viewport.x, viewport.y, viewport.width, viewport.height);
-            this.gl.clearBufferfv(PicoGL.COLOR, 0, this.skyColor);
-            this.gl.clear(PicoGL.DEPTH_BUFFER_BIT);
+            this.gl.clear(PicoGL.COLOR_BUFFER_BIT | PicoGL.DEPTH_BUFFER_BIT);
             this.gl.disable(PicoGL.SCISSOR_TEST);
 
             mat4.multiply(this.xrViewMatrix, view.transform.inverse.matrix, camera.viewMatrix);
@@ -1274,9 +1313,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     private bindXRFramebuffer(framebuffer: WebGLFramebuffer | null): void {
-        this.gl.bindFramebuffer(PicoGL.FRAMEBUFFER, framebuffer);
-        this.gl.drawBuffers([PicoGL.COLOR_ATTACHMENT0]);
-        this.resetPicoGLFramebufferState();
+        this.gl.bindFramebuffer(PicoGL.DRAW_FRAMEBUFFER, framebuffer);
+        const state = this.app.state as any;
+        state.framebuffers[state.drawFramebufferBinding] = undefined;
     }
 
     private resetPicoGLFramebufferState(): void {
