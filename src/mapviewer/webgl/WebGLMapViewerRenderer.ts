@@ -49,6 +49,9 @@ const INTERACTION_RADIUS = 5;
 
 const MAX_HAND_JOINTS = 50;
 const MAX_HAND_JOINTS_PER_HAND = 25;
+const XR_METERS_PER_SCENE_UNIT = 1.1; // A typical humanoid NPC is about 1.75 m tall.
+const XR_MIN_WORLD_SCALE = 0.1;
+const XR_MAX_WORLD_SCALE = 10;
 
 interface ColorRgb {
     r: number;
@@ -276,6 +279,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     xrFrameValidated: boolean = false;
     xrHandsValidated: boolean = false;
     xrFrameError?: string;
+    xrWorldScale: number = XR_METERS_PER_SCENE_UNIT;
+    xrPinchStartDistance?: number;
+    xrPinchStartScale?: number;
+    xrWorldScaleVector: vec3 = vec3.create();
     xrHandPinches: Set<XRInputSourceLike> = new Set();
     xrHandPositions: Map<XRInputSourceLike, vec3> = new Map();
     xrHandJointData: Float32Array = new Float32Array(MAX_HAND_JOINTS * 4);
@@ -1176,6 +1183,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.xrFrameValidated = false;
             this.xrHandsValidated = false;
             this.xrFrameError = undefined;
+            this.xrWorldScale = XR_METERS_PER_SCENE_UNIT;
+            this.xrPinchStartDistance = undefined;
+            this.xrPinchStartScale = undefined;
             while (this.gl.getError() !== PicoGL.NO_ERROR) {
                 // Ignore errors left by the last desktop frame.
             }
@@ -1219,6 +1229,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.xrSession = undefined;
         this.xrRefSpace = undefined;
         this.xrFrameError = undefined;
+        this.xrPinchStartDistance = undefined;
+        this.xrPinchStartScale = undefined;
         this.xrHandPinches.clear();
         this.xrHandPositions.clear();
         this.deleteXRFramebuffer();
@@ -1327,6 +1339,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         camera.update(this.app.width, this.app.height);
         mat4.rotateX(this.xrWorldViewMatrix, camera.cameraMatrix, -camera.pitch * RS_TO_RADIANS);
         mat4.invert(this.xrWorldViewMatrix, this.xrWorldViewMatrix);
+        vec3.set(this.xrWorldScaleVector, this.xrWorldScale, this.xrWorldScale, this.xrWorldScale);
+        mat4.fromScaling(this.xrViewMatrix, this.xrWorldScaleVector);
+        mat4.multiply(this.xrWorldViewMatrix, this.xrViewMatrix, this.xrWorldViewMatrix);
 
         const renderDistance = this.mapViewer.renderDistance;
         this.mapManager.update(
@@ -1426,6 +1441,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         if (inputSource.hand) {
             this.xrHandPinches.add(inputSource);
             this.xrHandPositions.delete(inputSource);
+            if (this.xrHandPinches.size === 2) {
+                this.xrPinchStartDistance = undefined;
+                this.xrPinchStartScale = undefined;
+            }
         }
     };
 
@@ -1433,11 +1452,16 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const inputSource = (event as XRInputSourceEventLike).inputSource;
         this.xrHandPinches.delete(inputSource);
         this.xrHandPositions.delete(inputSource);
+        this.xrPinchStartDistance = undefined;
+        this.xrPinchStartScale = undefined;
     };
 
     private handleXRHandInput(frame: XRFrameLike): void {
         const camera = this.mapViewer.camera;
         const speed = this.mapViewer.cameraSpeed;
+        let pinchSource: XRInputSourceLike | undefined;
+        let pinchPosition: XRPoseLike["transform"]["position"] | undefined;
+        let secondPinchPosition: XRPoseLike["transform"]["position"] | undefined;
 
         for (const inputSource of this.xrHandPinches) {
             const wrist = inputSource.hand?.get("wrist");
@@ -1446,27 +1470,66 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 this.xrHandPositions.delete(inputSource);
                 continue;
             }
+            if (!pinchSource) {
+                pinchSource = inputSource;
+                pinchPosition = pose.transform.position;
+            } else {
+                secondPinchPosition = pose.transform.position;
+            }
+        }
 
-            const position = pose.transform.position;
-            const previous = this.xrHandPositions.get(inputSource);
+        if (this.xrHandPinches.size === 2) {
+            if (pinchPosition && secondPinchPosition) {
+                const distance = Math.hypot(
+                    pinchPosition.x - secondPinchPosition.x,
+                    pinchPosition.y - secondPinchPosition.y,
+                    pinchPosition.z - secondPinchPosition.z,
+                );
+                if (this.xrPinchStartDistance === undefined && distance > 0.05) {
+                    this.xrPinchStartDistance = distance;
+                    this.xrPinchStartScale = this.xrWorldScale;
+                } else if (
+                    this.xrPinchStartDistance !== undefined &&
+                    this.xrPinchStartScale !== undefined &&
+                    distance > 0.05
+                ) {
+                    this.xrWorldScale = Math.min(
+                        XR_MAX_WORLD_SCALE,
+                        Math.max(
+                            XR_MIN_WORLD_SCALE,
+                            this.xrPinchStartScale * (distance / this.xrPinchStartDistance),
+                        ),
+                    );
+                }
+            } else {
+                this.xrPinchStartDistance = undefined;
+                this.xrPinchStartScale = undefined;
+            }
+            this.xrHandPositions.clear();
+            return;
+        }
+
+        this.xrPinchStartDistance = undefined;
+        this.xrPinchStartScale = undefined;
+        if (pinchSource && pinchPosition) {
+            const previous = this.xrHandPositions.get(pinchSource);
             if (previous) {
-                const dx = position.x - previous[0];
-                const dy = position.y - previous[1];
-                const dz = position.z - previous[2];
+                const dx = pinchPosition.x - previous[0];
+                const dy = pinchPosition.y - previous[1];
+                const dz = pinchPosition.z - previous[2];
 
                 if (Math.hypot(dx, dy, dz) < 0.15) {
-                    if (inputSource.handedness === "right") {
+                    if (pinchSource.handedness === "right") {
                         camera.updateYaw(camera.yaw, dx * 1024 * speed);
-                        camera.move(0, -dy * 32 * speed, 0);
                     } else {
                         camera.move(dx * 64 * speed, dy * 32 * speed, -dz * 64 * speed);
                     }
                 }
-                vec3.set(previous, position.x, position.y, position.z);
+                vec3.set(previous, pinchPosition.x, pinchPosition.y, pinchPosition.z);
             } else {
                 this.xrHandPositions.set(
-                    inputSource,
-                    vec3.fromValues(position.x, position.y, position.z),
+                    pinchSource,
+                    vec3.fromValues(pinchPosition.x, pinchPosition.y, pinchPosition.z),
                 );
             }
         }
