@@ -282,6 +282,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     xrWorldScale: number = XR_METERS_PER_SCENE_UNIT;
     xrPinchStartDistance?: number;
     xrPinchStartScale?: number;
+    xrWorldScalePivot: vec3 = vec3.create();
     xrWorldScaleVector: vec3 = vec3.create();
     xrHandPinches: Set<XRInputSourceLike> = new Set();
     xrHandPositions: Map<XRInputSourceLike, vec3> = new Map();
@@ -1339,9 +1340,18 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         camera.update(this.app.width, this.app.height);
         mat4.rotateX(this.xrWorldViewMatrix, camera.cameraMatrix, -camera.pitch * RS_TO_RADIANS);
         mat4.invert(this.xrWorldViewMatrix, this.xrWorldViewMatrix);
+        vec3.set(this.xrWorldScalePivot, camera.getPosX(), 0, camera.getPosZ());
+        vec3.transformMat4(this.xrWorldScalePivot, this.xrWorldScalePivot, this.xrWorldViewMatrix);
         vec3.set(this.xrWorldScaleVector, this.xrWorldScale, this.xrWorldScale, this.xrWorldScale);
         mat4.fromScaling(this.xrViewMatrix, this.xrWorldScaleVector);
         mat4.multiply(this.xrWorldViewMatrix, this.xrViewMatrix, this.xrWorldViewMatrix);
+        vec3.scale(
+            this.xrWorldScalePivot,
+            this.xrWorldScalePivot,
+            XR_METERS_PER_SCENE_UNIT - this.xrWorldScale,
+        );
+        mat4.fromTranslation(this.xrViewProjMatrix, this.xrWorldScalePivot);
+        mat4.multiply(this.xrWorldViewMatrix, this.xrViewProjMatrix, this.xrWorldViewMatrix);
 
         const renderDistance = this.mapViewer.renderDistance;
         this.mapManager.update(
