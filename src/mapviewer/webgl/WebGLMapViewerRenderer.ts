@@ -1244,6 +1244,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         let failed = false;
         try {
+            if (!this.xrFrameValidated) {
+                while (this.gl.getError() !== PicoGL.NO_ERROR) {
+                    // Quest Browser can leave an internal swapchain error before the callback.
+                }
+            }
             const deltaTime = this.stats.getDeltaTime(time);
             this.stats.update(time);
             this.renderXRFrame(time, deltaTime, frame);
