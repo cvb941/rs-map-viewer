@@ -2,7 +2,7 @@ import FileSaver from "file-saver";
 import { vec3 } from "gl-matrix";
 import { Leva, button, buttonGroup, folder, useControls } from "leva";
 import { ButtonGroupOpts, Schema } from "leva/dist/declarations/src/types";
-import { memo, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { DownloadProgress } from "../rs/cache/CacheFiles";
 import { isTouchDevice } from "../util/DeviceUtil";
@@ -28,6 +28,10 @@ interface MapViewerControlsProps {
     setDownloadProgress: (progress: DownloadProgress | undefined) => void;
 }
 
+interface XRSystemLike {
+    isSessionSupported?: (mode: "immersive-vr") => Promise<boolean>;
+}
+
 enum VarType {
     VARP = 0,
     VARBIT = 1,
@@ -42,6 +46,8 @@ export const MapViewerControls = memo(
         setDownloadProgress,
     }: MapViewerControlsProps): JSX.Element => {
         const mapViewer = renderer.mapViewer;
+        const vrOverlayRef = useRef<HTMLDivElement>(null);
+        const [isVrSupported, setVrSupported] = useState<boolean>();
 
         const [projectionType, setProjectionType] = useState<ProjectionType>(
             mapViewer.camera.projectionType,
@@ -118,6 +124,35 @@ export const MapViewerControls = memo(
                 document.removeEventListener("keydown", handleKeyDown);
             };
         }, [mapViewer]);
+
+        useEffect(() => {
+            let active = true;
+            const xr = (navigator as Navigator & { xr?: XRSystemLike }).xr;
+            const XRWebGLLayer = (window as Window & { XRWebGLLayer?: unknown }).XRWebGLLayer;
+
+            if (!window.isSecureContext || !xr?.isSessionSupported || !XRWebGLLayer) {
+                setVrSupported(false);
+                return;
+            }
+
+            const timeout = window.setTimeout(() => active && setVrSupported(false), 3000);
+            xr.isSessionSupported("immersive-vr")
+                .then((supported) => active && setVrSupported(supported))
+                .catch(() => active && setVrSupported(false))
+                .finally(() => window.clearTimeout(timeout));
+
+            return () => {
+                active = false;
+                window.clearTimeout(timeout);
+            };
+        }, []);
+
+        useEffect(() => {
+            const overlay = vrOverlayRef.current;
+            const preventWorldInput = (event: Event) => event.preventDefault();
+            overlay?.addEventListener("beforexrselect", preventWorldInput);
+            return () => overlay?.removeEventListener("beforexrselect", preventWorldInput);
+        }, []);
 
         useEffect(() => {
             setPointControls(
@@ -225,18 +260,12 @@ export const MapViewerControls = memo(
         }
 
         const isWebGLRenderer = renderer instanceof WebGLMapViewerRenderer;
-        const hasWebXR =
-            typeof navigator !== "undefined" &&
-            !!(navigator as Navigator & { xr?: unknown }).xr &&
-            !!(window as Window & { XRWebGLLayer?: unknown }).XRWebGLLayer;
-        const canEnterVR = isWebGLRenderer && window.isSecureContext && hasWebXR;
-        const vrStatusText = !isWebGLRenderer
-            ? "Use WebGL renderer"
-            : !window.isSecureContext
-            ? "Requires HTTPS"
-            : hasWebXR
-            ? "Ready"
-            : "Not available";
+        const canEnterVR = isWebGLRenderer && isVrSupported === true;
+        const enterVR = useCallback(() => {
+            if (renderer instanceof WebGLMapViewerRenderer) {
+                renderer.enterVR(vrOverlayRef.current ?? undefined);
+            }
+        }, [renderer]);
 
         useControls(
             {
@@ -354,23 +383,6 @@ export const MapViewerControls = memo(
                             },
                         },
                         ...renderer.getControls(),
-                    },
-                    { collapsed: true },
-                ),
-                VR: folder(
-                    {
-                        Status: {
-                            value: vrStatusText,
-                            editable: false,
-                        },
-                        "Enter VR": button(
-                            () => {
-                                if (renderer instanceof WebGLMapViewerRenderer) {
-                                    renderer.enterVR();
-                                }
-                            },
-                            { disabled: !canEnterVR },
-                        ),
                     },
                     { collapsed: true },
                 ),
@@ -493,12 +505,19 @@ export const MapViewerControls = memo(
         );
 
         return (
-            <Leva
-                titleBar={{ filter: false }}
-                collapsed={true}
-                hideCopyButton={true}
-                hidden={hidden}
-            />
+            <div ref={vrOverlayRef} className="vr-ui-overlay">
+                <Leva
+                    titleBar={{ filter: false }}
+                    collapsed={true}
+                    hideCopyButton={true}
+                    hidden={hidden}
+                />
+                {!hidden && canEnterVR && (
+                    <button className="vr-enter-button" type="button" onClick={enterVR}>
+                        Enter VR
+                    </button>
+                )}
+            </div>
         );
     },
 );

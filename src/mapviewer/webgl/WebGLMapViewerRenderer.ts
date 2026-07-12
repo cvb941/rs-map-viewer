@@ -64,7 +64,10 @@ interface ColorRgb {
 interface XRSystemLike {
     requestSession(
         mode: "immersive-vr",
-        options?: { optionalFeatures?: string[] },
+        options?: {
+            optionalFeatures?: string[];
+            domOverlay?: { root: Element };
+        },
     ): Promise<XRSessionLike>;
 }
 
@@ -1131,7 +1134,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
     }
 
-    async enterVR(): Promise<void> {
+    async enterVR(domOverlayRoot?: Element): Promise<void> {
         if (this.xrSession) {
             return;
         }
@@ -1161,8 +1164,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         let session: XRSessionLike | undefined;
         try {
+            const optionalFeatures = ["local-floor", "hand-tracking"];
+            if (domOverlayRoot) {
+                optionalFeatures.push("dom-overlay");
+            }
             session = await xr.requestSession("immersive-vr", {
-                optionalFeatures: ["local-floor", "hand-tracking"],
+                optionalFeatures,
+                ...(domOverlayRoot && { domOverlay: { root: domOverlayRoot } }),
             });
 
             this.resumeRenderLoopAfterXR = this.running;
