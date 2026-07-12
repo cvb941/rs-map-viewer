@@ -18,6 +18,7 @@ import {
 
 import { OsrsMenuEntry } from "../../components/rs/menu/OsrsMenu";
 import { createTextureArray } from "../../picogl/PicoTexture";
+import { RS_TO_RADIANS } from "../../rs/MathConstants";
 import { MenuTargetType } from "../../rs/MenuEntry";
 import { Scene } from "../../rs/scene/Scene";
 import { isTouchDevice, isWebGL2Supported, pixelRatio } from "../../util/DeviceUtil";
@@ -268,6 +269,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     xrSession?: XRSessionLike;
     xrRefSpace?: XRReferenceSpaceLike;
+    xrWorldViewMatrix: mat4 = mat4.create();
     xrViewMatrix: mat4 = mat4.create();
     xrViewProjMatrix: mat4 = mat4.create();
     resumeRenderLoopAfterXR: boolean = false;
@@ -1323,6 +1325,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.handleXRControllerInput(deltaTime, frame.session);
         this.handleXRHandInput(frame);
         camera.update(this.app.width, this.app.height);
+        mat4.rotateX(this.xrWorldViewMatrix, camera.cameraMatrix, -camera.pitch * RS_TO_RADIANS);
+        mat4.invert(this.xrWorldViewMatrix, this.xrWorldViewMatrix);
 
         const renderDistance = this.mapViewer.renderDistance;
         this.mapManager.update(
@@ -1357,7 +1361,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.gl.disable(PicoGL.SCISSOR_TEST);
             this.gl.clear(PicoGL.COLOR_BUFFER_BIT | PicoGL.DEPTH_BUFFER_BIT);
 
-            mat4.multiply(this.xrViewMatrix, view.transform.inverse.matrix, camera.viewMatrix);
+            mat4.multiply(this.xrViewMatrix, view.transform.inverse.matrix, this.xrWorldViewMatrix);
             mat4.multiply(this.xrViewProjMatrix, view.projectionMatrix, this.xrViewMatrix);
             this.updateSceneUniforms(
                 this.xrViewMatrix,
