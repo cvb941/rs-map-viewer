@@ -3,6 +3,8 @@ import frameFxaaFragShader from "./frame-fxaa.frag.glsl";
 import frameFxaaVertShader from "./frame-fxaa.vert.glsl";
 import frameFragShader from "./frame.frag.glsl";
 import frameVertShader from "./frame.vert.glsl";
+import handFragShader from "./hand.frag.glsl";
+import handVertShader from "./hand.vert.glsl";
 import mainFragShader from "./main.frag.glsl";
 import mainVertShader from "./main.vert.glsl";
 import npcVertShader from "./npc.vert.glsl";
@@ -33,3 +35,4 @@ export function createNpcProgram(hasMultiDraw: boolean, discardAlpha: boolean): 
 
 export const FRAME_PROGRAM = [frameVertShader, frameFragShader];
 export const FRAME_FXAA_PROGRAM = [frameFxaaVertShader, frameFxaaFragShader];
+export const HAND_PROGRAM = [handVertShader, handFragShader];

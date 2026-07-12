@@ -1,5 +1,5 @@
 import Denque from "denque";
-import { mat4, vec2, vec4 } from "gl-matrix";
+import { mat4, vec2, vec3, vec4 } from "gl-matrix";
 import { folder } from "leva";
 import { Schema } from "leva/dist/declarations/src/types";
 import {
@@ -35,6 +35,7 @@ import { SdMapLoaderInput } from "./loader/SdMapLoaderInput";
 import {
     FRAME_FXAA_PROGRAM,
     FRAME_PROGRAM,
+    HAND_PROGRAM,
     createMainProgram,
     createNpcProgram,
 } from "./shaders/Shaders";
@@ -44,6 +45,9 @@ const TEXTURE_SIZE = 128;
 
 const INTERACT_BUFFER_COUNT = 2;
 const INTERACTION_RADIUS = 5;
+
+const MAX_HAND_JOINTS = 50;
+const MAX_HAND_JOINTS_PER_HAND = 25;
 
 interface ColorRgb {
     r: number;
@@ -78,9 +82,23 @@ interface XRSessionLike extends EventTarget {
 interface XRFrameLike {
     session: XRSessionLike;
     getViewerPose(referenceSpace: XRReferenceSpaceLike): XRViewerPoseLike | null;
+    getJointPose(joint: XRJointSpaceLike, referenceSpace: XRReferenceSpaceLike): XRPoseLike | null;
+    fillPoses(
+        spaces: Iterable<XRJointSpaceLike>,
+        referenceSpace: XRReferenceSpaceLike,
+        transforms: Float32Array,
+    ): boolean;
 }
 
-interface XRReferenceSpaceLike {}
+interface XRSpaceLike {}
+
+interface XRReferenceSpaceLike extends XRSpaceLike {}
+
+interface XRPoseLike {
+    transform: {
+        position: { x: number; y: number; z: number };
+    };
+}
 
 interface XRViewerPoseLike {
     views: XRViewLike[];
@@ -103,6 +121,19 @@ interface XRWebGLLayerLike {
 interface XRInputSourceLike {
     handedness?: string;
     gamepad?: Gamepad;
+    hand?: XRHandLike;
+}
+
+interface XRHandLike {
+    size: number;
+    get(joint: "wrist"): XRJointSpaceLike;
+    values(): Iterable<XRJointSpaceLike>;
+}
+
+interface XRJointSpaceLike extends XRSpaceLike {}
+
+interface XRInputSourceEventLike extends Event {
+    inputSource: XRInputSourceLike;
 }
 
 enum TextureFilterMode {
@@ -159,6 +190,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     npcProgram?: Program;
     frameProgram?: Program;
     frameFxaaProgram?: Program;
+    handProgram?: Program;
 
     // Uniforms
     sceneUniformBuffer?: UniformBuffer;
@@ -193,6 +225,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     frameDrawCall?: DrawCall;
     frameFxaaDrawCall?: DrawCall;
+    handDrawCall?: DrawCall;
+    handVertexBuffer?: VertexBuffer;
+    handVertexArray?: VertexArray;
 
     // Settings
     maxLevel: number = Scene.MAX_LEVELS - 1;
@@ -233,7 +268,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     xrViewProjMatrix: mat4 = mat4.create();
     resumeRenderLoopAfterXR: boolean = false;
     xrFrameValidated: boolean = false;
+    xrHandsValidated: boolean = false;
     xrFrameError?: string;
+    xrHandPinches: Set<XRInputSourceLike> = new Set();
+    xrHandPositions: Map<XRInputSourceLike, vec3> = new Map();
+    xrHandJointData: Float32Array = new Float32Array(MAX_HAND_JOINTS * 4);
+    xrHandPoseData: Float32Array = new Float32Array(MAX_HAND_JOINTS_PER_HAND * 16);
 
     constructor(public mapViewer: MapViewer) {
         super(mapViewer);
@@ -316,18 +356,38 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             createNpcProgram(hasMultiDraw, true),
             FRAME_PROGRAM,
             FRAME_FXAA_PROGRAM,
+            HAND_PROGRAM,
         );
 
-        const [mainProgram, mainAlphaProgram, npcProgram, frameProgram, frameFxaaProgram] =
-            programs;
+        const [
+            mainProgram,
+            mainAlphaProgram,
+            npcProgram,
+            frameProgram,
+            frameFxaaProgram,
+            handProgram,
+        ] = programs;
         this.mainProgram = mainProgram;
         this.mainAlphaProgram = mainAlphaProgram;
         this.npcProgram = npcProgram;
         this.frameProgram = frameProgram;
         this.frameFxaaProgram = frameFxaaProgram;
+        this.handProgram = handProgram;
 
         this.frameDrawCall = this.app.createDrawCall(frameProgram, this.quadArray);
         this.frameFxaaDrawCall = this.app.createDrawCall(frameFxaaProgram, this.quadArray);
+        this.handVertexBuffer = this.app.createVertexBuffer(
+            PicoGL.FLOAT,
+            4,
+            MAX_HAND_JOINTS * 4,
+            PicoGL.DYNAMIC_DRAW,
+        );
+        this.handVertexArray = this.app
+            .createVertexArray()
+            .vertexAttributeBuffer(0, this.handVertexBuffer);
+        this.handDrawCall = this.app
+            .createDrawCall(handProgram, this.handVertexArray)
+            .primitive(PicoGL.POINTS);
 
         return programs;
     }
@@ -1079,7 +1139,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         let session: XRSessionLike | undefined;
         try {
             session = await xr.requestSession("immersive-vr", {
-                optionalFeatures: ["local-floor"],
+                optionalFeatures: ["local-floor", "hand-tracking"],
             });
 
             this.resumeRenderLoopAfterXR = this.running;
@@ -1108,14 +1168,19 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.xrSession = session;
             this.xrRefSpace = await this.requestXRReferenceSpace(session);
             this.xrFrameValidated = false;
+            this.xrHandsValidated = false;
             this.xrFrameError = undefined;
             while (this.gl.getError() !== PicoGL.NO_ERROR) {
                 // Ignore errors left by the last desktop frame.
             }
             session.addEventListener("end", this.onXRSessionEnd);
+            session.addEventListener("selectstart", this.onXRSelectStart);
+            session.addEventListener("selectend", this.onXRSelectEnd);
             session.requestAnimationFrame(this.onXRFrame);
         } catch (e) {
             session?.removeEventListener("end", this.onXRSessionEnd);
+            session?.removeEventListener("selectstart", this.onXRSelectStart);
+            session?.removeEventListener("selectend", this.onXRSelectEnd);
             session?.end().catch(() => {});
             this.xrSession = undefined;
             this.xrRefSpace = undefined;
@@ -1143,9 +1208,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     private onXRSessionEnd = () => {
         const frameError = this.xrFrameError;
         this.xrSession?.removeEventListener("end", this.onXRSessionEnd);
+        this.xrSession?.removeEventListener("selectstart", this.onXRSelectStart);
+        this.xrSession?.removeEventListener("selectend", this.onXRSelectEnd);
         this.xrSession = undefined;
         this.xrRefSpace = undefined;
         this.xrFrameError = undefined;
+        this.xrHandPinches.clear();
+        this.xrHandPositions.clear();
         this.resetPicoGLFramebufferState();
         this.gl.viewport(0, 0, this.app.width, this.app.height);
         this.resumeDesktopRenderLoop();
@@ -1233,6 +1302,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.handleKeyInput(deltaTime);
         this.handleJoystickInput(deltaTime);
         this.handleXRControllerInput(deltaTime, frame.session);
+        this.handleXRHandInput(frame);
         camera.update(this.app.width, this.app.height);
 
         const renderDistance = this.mapViewer.renderDistance;
@@ -1261,6 +1331,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.app.depthMask(true);
         this.app.clearColor(this.skyColor[0], this.skyColor[1], this.skyColor[2], 1);
         this.bindXRFramebuffer(glLayer.framebuffer);
+        const handJointCount = this.updateXRHandJoints(frame);
 
         for (const view of pose.views) {
             const viewport = glLayer.getViewport(view);
@@ -1280,6 +1351,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 renderDistance,
             );
             this.drawScenePasses(npcDataTextureIndex, npcDataTexture);
+            this.drawXRHandJoints(view, handJointCount);
         }
 
         this.loadPendingMap(timeSec);
@@ -1309,6 +1381,115 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             } else {
                 this.mapViewer.camera.move(x * -moveSpeed, 0, y * moveSpeed, false);
             }
+        }
+    }
+
+    private onXRSelectStart = (event: Event) => {
+        const inputSource = (event as XRInputSourceEventLike).inputSource;
+        if (inputSource.hand) {
+            this.xrHandPinches.add(inputSource);
+            this.xrHandPositions.delete(inputSource);
+        }
+    };
+
+    private onXRSelectEnd = (event: Event) => {
+        const inputSource = (event as XRInputSourceEventLike).inputSource;
+        this.xrHandPinches.delete(inputSource);
+        this.xrHandPositions.delete(inputSource);
+    };
+
+    private handleXRHandInput(frame: XRFrameLike): void {
+        const camera = this.mapViewer.camera;
+        const speed = this.mapViewer.cameraSpeed;
+
+        for (const inputSource of this.xrHandPinches) {
+            const wrist = inputSource.hand?.get("wrist");
+            const pose = wrist ? frame.getJointPose(wrist, this.xrRefSpace!) : null;
+            if (!pose) {
+                this.xrHandPositions.delete(inputSource);
+                continue;
+            }
+
+            const position = pose.transform.position;
+            const previous = this.xrHandPositions.get(inputSource);
+            if (previous) {
+                const dx = position.x - previous[0];
+                const dy = position.y - previous[1];
+                const dz = position.z - previous[2];
+
+                if (Math.hypot(dx, dy, dz) < 0.15) {
+                    if (inputSource.handedness === "right") {
+                        camera.updateYaw(camera.yaw, dx * 1024 * speed);
+                        camera.move(0, -dy * 32 * speed, 0);
+                    } else {
+                        camera.move(dx * 64 * speed, dy * 32 * speed, -dz * 64 * speed);
+                    }
+                }
+                vec3.set(previous, position.x, position.y, position.z);
+            } else {
+                this.xrHandPositions.set(
+                    inputSource,
+                    vec3.fromValues(position.x, position.y, position.z),
+                );
+            }
+        }
+    }
+
+    private updateXRHandJoints(frame: XRFrameLike): number {
+        if (!this.handVertexBuffer) {
+            return 0;
+        }
+
+        let jointCount = 0;
+        for (const inputSource of frame.session.inputSources) {
+            const hand = inputSource.hand;
+            if (!hand || hand.size > MAX_HAND_JOINTS_PER_HAND) {
+                continue;
+            }
+            if (!frame.fillPoses(hand.values(), this.xrRefSpace!, this.xrHandPoseData)) {
+                continue;
+            }
+
+            const handState =
+                (inputSource.handedness === "right" ? 1 : 0) +
+                (this.xrHandPinches.has(inputSource) ? 2 : 0);
+            for (let i = 0; i < hand.size && jointCount < MAX_HAND_JOINTS; i++) {
+                const matrixOffset = i * 16;
+                const jointOffset = jointCount * 4;
+                this.xrHandJointData[jointOffset] = this.xrHandPoseData[matrixOffset + 12];
+                this.xrHandJointData[jointOffset + 1] = this.xrHandPoseData[matrixOffset + 13];
+                this.xrHandJointData[jointOffset + 2] = this.xrHandPoseData[matrixOffset + 14];
+                this.xrHandJointData[jointOffset + 3] = handState;
+                jointCount++;
+            }
+        }
+
+        if (jointCount > 0) {
+            this.handVertexBuffer.data(this.xrHandJointData.subarray(0, jointCount * 4));
+        }
+        return jointCount;
+    }
+
+    private drawXRHandJoints(view: XRViewLike, jointCount: number): void {
+        if (!this.handDrawCall || jointCount === 0) {
+            return;
+        }
+
+        mat4.multiply(this.xrViewProjMatrix, view.projectionMatrix, view.transform.inverse.matrix);
+        this.app.enable(PicoGL.BLEND);
+        this.app.depthMask(false);
+        this.handDrawCall
+            .uniform("u_viewProjMatrix", this.xrViewProjMatrix)
+            .drawRanges([0, jointCount])
+            .draw();
+        this.app.depthMask(true);
+
+        if (!this.xrHandsValidated) {
+            const glError = this.gl.getError();
+            if (glError !== PicoGL.NO_ERROR) {
+                throw new Error(`WebXR hand rendering error 0x${glError.toString(16)}`);
+            }
+            this.xrHandsValidated = true;
         }
     }
 
@@ -1840,7 +2021,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.xrRefSpace = undefined;
         this.resumeRenderLoopAfterXR = false;
         xrSession?.removeEventListener("end", this.onXRSessionEnd);
+        xrSession?.removeEventListener("selectstart", this.onXRSelectStart);
+        xrSession?.removeEventListener("selectend", this.onXRSelectEnd);
         xrSession?.end().catch(() => {});
+        this.xrHandPinches.clear();
+        this.xrHandPositions.clear();
 
         super.cleanUp();
         this.mapViewer.workerPool.resetLoader(this.dataLoader);
@@ -1850,6 +2035,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         this.quadPositions?.delete();
         this.quadPositions = undefined;
+
+        this.handVertexArray?.delete();
+        this.handVertexArray = undefined;
+
+        this.handVertexBuffer?.delete();
+        this.handVertexBuffer = undefined;
+        this.handDrawCall = undefined;
 
         // Uniforms
         this.sceneUniformBuffer?.delete();
@@ -1899,6 +2091,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             }
             this.shadersPromise = undefined;
         }
+        this.handProgram = undefined;
         console.log("Renderer cleaned up");
     }
 }
