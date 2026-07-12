@@ -17,7 +17,7 @@ export class Interactions {
 
     constructor(readonly interactRadius: number) {
         this.interactSize = interactRadius * 2 + 1;
-        this.interactBuffer = new Float32Array(this.interactSize * this.interactSize * 4);
+        this.interactBuffer = new Float32Array(this.interactSize * this.interactSize * 2);
     }
 
     read(gl: WebGL2RenderingContext, x: number, y: number): void {
@@ -43,7 +43,7 @@ export class Interactions {
         this.pixelBuf = gl.createBuffer();
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pixelBuf);
         gl.bufferData(gl.PIXEL_PACK_BUFFER, this.interactBuffer.byteLength, gl.STREAM_READ);
-        gl.readPixels(readX, readY, this.readWidth, this.readHeight, PicoGL.RGBA, PicoGL.FLOAT, 0);
+        gl.readPixels(readX, readY, this.readWidth, this.readHeight, PicoGL.RG, PicoGL.FLOAT, 0);
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
 
         this.sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -77,14 +77,15 @@ export class Interactions {
 
         for (let y = 0; y < this.readHeight; y++) {
             for (let x = 0; x < this.readWidth; x++) {
-                const index = (y * this.readWidth + x) * 4;
+                const index = (y * this.readWidth + x) * 2;
 
-                const mapId = this.interactBuffer[index + 1];
+                const packedInteraction = this.interactBuffer[index + 1];
+                const mapId = packedInteraction >> 2;
                 if (mapId !== 0) {
                     hoveredMapIds.add(mapId);
                 }
 
-                const interactType = this.interactBuffer[index + 2];
+                const interactType = packedInteraction & 0x3;
                 if (interactType !== 0) {
                     const dist = Math.max(
                         Math.abs(x + this.offsetX - this.interactRadius),

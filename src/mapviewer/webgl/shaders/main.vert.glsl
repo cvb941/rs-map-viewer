@@ -35,7 +35,7 @@ out vec2 v_texCoord;
 flat out uint v_texId;
 flat out float v_alphaCutOff;
 out float v_fogAmount;
-flat out vec4 v_interactId;
+flat out vec2 v_interactId;
 
 #include "./includes/branchless-logic.glsl";
 #include "./includes/hsl-to-rgb.glsl";
@@ -125,11 +125,9 @@ void main() {
 
     float interactType = when_neq(v_fogAmount, 1.0) * float(modelInfo.interactType);
 
-    v_interactId = vec4(
+    v_interactId = vec2(
         float(modelInfo.interactId),
-        float(uint(u_mapPos.x) << 8u | uint(u_mapPos.y)),
-        interactType,
-        1.0
+        float(uint(u_mapPos.x) << 8u | uint(u_mapPos.y)) * 4.0 + interactType
     );
 
     gl_Position = u_viewMatrix * vec4(localPos, 1.0);

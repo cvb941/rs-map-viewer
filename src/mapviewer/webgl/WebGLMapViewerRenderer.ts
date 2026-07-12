@@ -414,8 +414,6 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     initFramebuffers(): void {
-        this.initFramebuffer();
-
         this.textureColorTarget = this.app.createTexture2D(this.app.width, this.app.height, {
             minFilter: PicoGL.LINEAR,
             magFilter: PicoGL.LINEAR,
@@ -426,7 +424,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         // Interact
         this.interactColorTarget = this.app.createTexture2D(this.app.width, this.app.height, {
-            internalFormat: PicoGL.RGBA32F,
+            internalFormat: PicoGL.RG32F,
             type: PicoGL.FLOAT,
             minFilter: PicoGL.NEAREST,
             magFilter: PicoGL.NEAREST,
@@ -434,6 +432,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.interactFramebuffer = this.app
             .createFramebuffer()
             .colorTarget(0, this.interactColorTarget);
+
+        this.initFramebuffer();
     }
 
     initFramebuffer(): void {
@@ -447,18 +447,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             samples = this.gl.getParameter(PicoGL.MAX_SAMPLES);
         }
 
-        this.colorTarget = this.app.createRenderbuffer(
-            this.app.width,
-            this.app.height,
-            PicoGL.RGBA8,
-            samples,
-        );
-        this.interactTarget = this.app.createRenderbuffer(
-            this.app.width,
-            this.app.height,
-            PicoGL.RGBA32F,
-            samples,
-        );
+        this.colorTarget = this.msaaEnabled
+            ? this.app.createRenderbuffer(this.app.width, this.app.height, PicoGL.RGBA8, samples)
+            : undefined;
+        this.interactTarget = this.msaaEnabled
+            ? this.app.createRenderbuffer(this.app.width, this.app.height, PicoGL.RG32F, samples)
+            : undefined;
         this.depthTarget = this.app.createRenderbuffer(
             this.app.width,
             this.app.height,
@@ -467,8 +461,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         );
         this.framebuffer = this.app
             .createFramebuffer()
-            .colorTarget(0, this.colorTarget)
-            .colorTarget(1, this.interactTarget)
+            .colorTarget(0, this.colorTarget ?? this.textureColorTarget!)
+            .colorTarget(1, this.interactTarget ?? this.interactColorTarget!)
             .depthTarget(this.depthTarget);
 
         this.needsFramebufferUpdate = false;
@@ -959,8 +953,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             !this.sceneUniformBuffer ||
             !this.framebuffer ||
             !this.textureFramebuffer ||
+            !this.textureColorTarget ||
             !this.frameDrawCall ||
             !this.interactFramebuffer ||
+            !this.interactColorTarget ||
             !this.textureArray ||
             !this.textureMaterials
         ) {
@@ -980,6 +976,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const camera = this.mapViewer.camera;
 
         this.handleInput(deltaTime);
+        const interactionsEnabled = !inputManager.isPointerLock();
 
         camera.update(this.app.width, this.app.height);
 
@@ -1003,7 +1000,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const currInteractions = this.interactions[frameCount % this.interactions.length];
 
         const interactionsStart = performance.now();
-        if (!inputManager.isPointerLock()) {
+        if (interactionsEnabled) {
             this.checkInteractions(currInteractions);
         } else if (this.hoveredMapIds.size > 0) {
             this.hoveredMapIds.clear();
@@ -1020,6 +1017,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.app.depthMask(true);
 
         this.app.drawFramebuffer(this.framebuffer);
+        this.gl.drawBuffers(
+            interactionsEnabled
+                ? [PicoGL.COLOR_ATTACHMENT0, PicoGL.COLOR_ATTACHMENT1]
+                : [PicoGL.COLOR_ATTACHMENT0],
+        );
 
         this.app.clearColor(0.0, 0.0, 0.0, 1.0);
         this.app.clear();
@@ -1048,14 +1050,15 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
         const transparentNpcPassTime = performance.now() - transparentNpcPassStart;
 
-        // Can't sample from renderbuffer so blit to a texture for sampling.
+        // Keep the scene bound for interaction reads; only MSAA needs a color resolve.
         this.app.readFramebuffer(this.framebuffer);
+        if (this.msaaEnabled) {
+            this.app.drawFramebuffer(this.textureFramebuffer);
+            this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT0);
+            this.app.blitFramebuffer(PicoGL.COLOR_BUFFER_BIT);
+        }
 
-        this.app.drawFramebuffer(this.textureFramebuffer);
-        this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT0);
-        this.app.blitFramebuffer(PicoGL.COLOR_BUFFER_BIT);
-
-        if (!inputManager.isPointerLock()) {
+        if (interactionsEnabled) {
             const mouseX = inputManager.mouseX;
             const mouseY = inputManager.mouseY;
             if (mouseX !== -1 && mouseY !== -1) {
@@ -1084,16 +1087,14 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         this.app.disable(PicoGL.BLEND);
 
-        this.app.clearMask(PicoGL.COLOR_BUFFER_BIT | PicoGL.DEPTH_BUFFER_BIT);
-        this.app.clearColor(0.0, 0.0, 0.0, 1.0);
-        this.app.defaultDrawFramebuffer().clear();
+        this.app.defaultDrawFramebuffer();
 
         if (this.frameFxaaDrawCall && this.fxaaEnabled) {
             this.frameFxaaDrawCall.uniform("u_resolution", this.resolutionUni);
-            this.frameFxaaDrawCall.texture("u_frame", this.textureFramebuffer.colorAttachments[0]);
+            this.frameFxaaDrawCall.texture("u_frame", this.textureColorTarget);
             this.frameFxaaDrawCall.draw();
         } else {
-            this.frameDrawCall.texture("u_frame", this.textureFramebuffer.colorAttachments[0]);
+            this.frameDrawCall.texture("u_frame", this.textureColorTarget);
             this.frameDrawCall.draw();
         }
 
@@ -1802,17 +1803,24 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         const newNpcDataTextureIndex = frameCount % this.npcDataTextureBuffer.length;
         const npcDataTextureIndex = (frameCount + 1) % this.npcDataTextureBuffer.length;
-        this.npcDataTextureBuffer[newNpcDataTextureIndex]?.delete();
-        this.npcDataTextureBuffer[newNpcDataTextureIndex] = this.app.createTexture2D(
-            this.npcRenderData,
-            16,
-            Math.max(Math.ceil(this.npcRenderCount / 16), 1),
-            {
-                internalFormat: PicoGL.RGBA16UI,
-                minFilter: PicoGL.NEAREST,
-                magFilter: PicoGL.NEAREST,
-            },
-        );
+        const textureHeight = this.npcRenderData.length / (16 * 4);
+        const texture = this.npcDataTextureBuffer[newNpcDataTextureIndex];
+
+        if (texture?.height === textureHeight) {
+            texture.data(this.npcRenderData);
+        } else {
+            texture?.delete();
+            this.npcDataTextureBuffer[newNpcDataTextureIndex] = this.app.createTexture2D(
+                this.npcRenderData,
+                16,
+                textureHeight,
+                {
+                    internalFormat: PicoGL.RGBA16UI,
+                    minFilter: PicoGL.NEAREST,
+                    magFilter: PicoGL.NEAREST,
+                },
+            );
+        }
 
         return npcDataTextureIndex;
     }
@@ -2037,7 +2045,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             }
             for (const index of indices) {
                 const interactId = this.interactBuffer[index];
-                const interactType = this.interactBuffer[index + 2];
+                const interactType = this.interactBuffer[index + 1] & 0x3;
                 if (interactType === InteractType.LOC) {
                     const locType = this.mapViewer.locTypeLoader.load(interactId);
                     if (locType.name === "null" && !this.mapViewer.debugId) {

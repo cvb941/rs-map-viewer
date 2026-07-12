@@ -13,10 +13,10 @@ in vec2 v_texCoord;
 flat in uint v_texId;
 flat in float v_alphaCutOff;
 in float v_fogAmount;
-flat in vec4 v_interactId;
+flat in vec2 v_interactId;
 
 layout(location = 0) out vec4 fragColor;
-layout(location = 1) out vec4 interactId;
+layout(location = 1) out vec2 interactId;
 
 void main() {
     vec4 textureColor = texture(u_textures, vec3(v_texCoord, v_texId)).bgra;
